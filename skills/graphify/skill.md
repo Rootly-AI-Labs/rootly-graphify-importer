@@ -57,7 +57,7 @@ Follow these steps in order. Do not skip steps.
 ### Step 1 - Ensure graphify is installed
 
 ```bash
-python3 -c "import graphify" 2>/dev/null || pip install graphify -q --break-system-packages 2>&1 | tail -3
+python3 -c "import graphify" 2>/dev/null || pip install graphifyy -q --break-system-packages 2>&1 | tail -3
 ```
 
 If the import succeeds, print nothing and move straight to Step 2.
@@ -498,9 +498,25 @@ print('graph.svg written - embeds in Obsidian, Notion, GitHub READMEs')
 "
 ```
 
-### Step 7c - SVG export already covered in Step 7b above
+### Step 7c - GraphML export (only if --graphml flag)
 
-_(No separate --obsidian flag - Obsidian vault is always generated in Step 6 by default.)_
+```bash
+python3 -c "
+import json
+from graphify.build import build_from_json
+from graphify.export import to_graphml
+from pathlib import Path
+
+extraction = json.loads(Path('.graphify_extract.json').read_text())
+analysis   = json.loads(Path('.graphify_analysis.json').read_text())
+
+G = build_from_json(extraction)
+communities = {int(k): v for k, v in analysis['communities'].items()}
+
+to_graphml(G, communities, 'graphify-out/graph.graphml')
+print('graph.graphml written - open in Gephi, yEd, or any GraphML tool')
+"
+```
 
 ### Step 7d - MCP server (only if --mcp flag)
 
@@ -609,6 +625,14 @@ Then paste these sections from GRAPH_REPORT.md directly into the chat:
 - Suggested Questions
 
 Do NOT paste the full report - just those three sections. Keep it concise.
+
+Then immediately offer to explore. Pick the single most interesting suggested question from the report - the one that crosses the most community boundaries or has the most surprising bridge node - and ask:
+
+> "The most interesting question this graph can answer: **[question]**. Want me to trace it?"
+
+If the user says yes, run `/graphify query "[question]"` on the graph and walk them through the answer using the graph structure - which nodes connect, which community boundaries get crossed, what the path reveals. Keep going as long as they want to explore. Each answer should end with a natural follow-up ("this connects to X - want to go deeper?") so the session feels like navigation, not a one-shot report.
+
+The graph is the map. Your job after the pipeline is to be the guide.
 
 ---
 
