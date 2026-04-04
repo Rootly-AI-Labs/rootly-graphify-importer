@@ -1,6 +1,10 @@
 # graphify
 
-    any folder of files → persistent knowledge graph → Obsidian vault, graph.json, audit report
+[![CI](https://github.com/safishamsi/graphify/actions/workflows/ci.yml/badge.svg?branch=v1)](https://github.com/safishamsi/graphify/actions/workflows/ci.yml)
+
+**A Claude Code skill.** Type `/graphify` in Claude Code — it reads your files, builds a knowledge graph, and gives you back structure you didn't know was there.
+
+> Andrej Karpathy keeps a `/raw` folder where he drops papers, tweets, screenshots, and notes. The problem: that folder becomes opaque. You forget what's in it. You can't see what connects. graphify is the answer to that problem.
 
 ```
 /graphify ./raw
@@ -15,30 +19,41 @@
 └── memory/          Q&A results filed back in — what you ask grows the graph on next --update
 ```
 
-[placeholder: animated GIF showing the full pipeline — detect → extract → cluster → report → Obsidian vault]
-
 ## Why this exists
 
-**The problem:** Andrej Karpathy described it well: he keeps a `/raw` folder where he drops papers, tweets, screenshots, and notes. The problem is that folder becomes opaque. You forget what's in it. You can't see what connects. Ask Claude "what links paper A to the code in repo B?" and it will hallucinate — it hasn't read both, and even if it has, it has no memory of that connection next session.
+graphify takes that observation and builds the missing infrastructure:
 
-**What LLMs get wrong:** Naive summarization fills in every gap confidently. You get a summary that sounds complete but you can't tell what was actually in the files vs invented by the model. And next session, it's all gone — no memory of what it extracted.
+| His problem | What graphify adds |
+|---|---|
+| Folder becomes opaque | Community detection surfaces structure automatically |
+| Forget what's in it | Persistent `graph.json` — query weeks later without re-reading |
+| Can't see connections | Cross-community surprising connections as a first-class output |
+| Claude hallucinates missing links | `EXTRACTED` / `INFERRED` / `AMBIGUOUS` — honest about what was found vs guessed |
+| Context resets every session | Memory feedback loop — what you ask grows the graph on `--update` |
+| Only works on text | PDFs, images, screenshots, tweets, any language via vision |
+
+**What LLMs get wrong without it:** Naive summarization fills every gap confidently. You get output that sounds complete but you can't tell what was actually in the files vs invented. And next session, it's all gone.
 
 **What graphify does differently:**
 
-- **Persistent graph** — relationships are stored in `.graphify/graph.json` and survive across sessions. Query weeks later without re-reading anything.
-- **Honest audit trail** — every edge is tagged `EXTRACTED` (explicitly stated), `INFERRED` (call-graph or reasonable deduction), or `AMBIGUOUS` (flagged for review). You always know what was found vs invented.
+- **Persistent graph** — relationships stored in `.graphify/graph.json`, survive across sessions. Query weeks later without re-reading anything.
+- **Honest audit trail** — every edge tagged `EXTRACTED` (explicitly stated), `INFERRED` (call-graph or reasonable deduction), or `AMBIGUOUS` (flagged for review). You always know what was found vs invented.
 - **Cross-document surprise** — Leiden community detection finds clusters, then surfaces cross-community connections: the things you would never think to ask about directly.
-- **Feedback loop** — every query answer is saved to `.graphify/memory/`. On next `--update`, that Q&A becomes a node. The graph grows from what you ask, not just what you add.
+- **Feedback loop** — every query answer saved to `.graphify/memory/`. On next `--update`, that Q&A becomes a node. The graph grows from what you ask, not just what you add.
 
 The result: a navigable map of your corpus that is honest about what it knows and what it guessed.
 
 ## Install
 
+**Requires:** [Claude Code](https://claude.ai/code) (the CLI or desktop app) and Python 3.10+
+
 ```bash
-pip install graphify && graphify install
+pip install graphifyy && graphify install
 ```
 
-That's it. This copies the skill file into `~/.claude/skills/graphify/` and registers it in `~/.claude/CLAUDE.md` automatically. The Python package and all dependencies install on first `/graphify` run — you never touch pip manually again.
+> **Note:** The PyPI package is temporarily named `graphifyy` while the `graphify` name is being reclaimed. The CLI, skill command, and everything else is still called `graphify` — only `pip install` uses the extra `y`.
+
+This copies the skill file into `~/.claude/skills/graphify/` and registers it in `~/.claude/CLAUDE.md`. The Python package and all dependencies install automatically on first `/graphify` run — you never touch pip again.
 
 Then open Claude Code in any directory and type:
 
@@ -70,7 +85,9 @@ When the user types `/graphify`, invoke the Skill tool with `skill: "graphify"` 
 
 ## Usage
 
-```bash
+All commands are typed inside Claude Code:
+
+```
 /graphify                          # run on current directory
 /graphify ./raw                    # run on a specific folder
 /graphify ./raw --mode deep        # more aggressive INFERRED edge extraction
@@ -98,8 +115,7 @@ Works with any mix of file types in the same folder:
 
 | Type | Extensions | How it's extracted |
 |------|-----------|-------------------|
-| Code | `.py .ts .tsx .js .go .rs` | AST (deterministic) + call-graph pass (INFERRED) |
-| Code | `.java .cpp .c .rb .swift .kt` | Claude semantic extraction |
+| Code | `.py .ts .tsx .js .go .rs .java .c .cpp .rb .cs .kt .scala .php` | AST via tree-sitter (deterministic) + call-graph pass (INFERRED) |
 | Documents | `.md .txt .rst` | Concepts + relationships via Claude |
 | Papers | `.pdf` | Citation mining + concept extraction |
 | Images | `.png .jpg .webp .gif .svg` | Claude vision — screenshots, charts, whiteboards, any language |
@@ -170,10 +186,13 @@ If corpora in your domain consistently contain structures graphify doesn't extra
 
 ## Worked examples
 
-| Corpus | Type | Eval report |
-|--------|------|-------------|
-| httpx (Python HTTP client) | Codebase | `tests/EVAL_httpx.md` + `tests/GRAPH_REPORT_httpx.md` |
-| Mixed corpus (code + paper + Arabic image) | Multi-type | `tests/EVAL_mixed_corpus.md` |
+| Corpus | Type | Reduction | Eval report |
+|--------|------|-----------|-------------|
+| Karpathy repos + 5 research papers + 4 images | Mixed (code + papers + images) | **71.5x** | [`worked/karpathy-repos/review.md`](worked/karpathy-repos/review.md) |
+| httpx (Python HTTP client) | Codebase (6 files) | small corpus¹ | [`worked/httpx/review.md`](worked/httpx/review.md) + [`GRAPH_REPORT.md`](worked/httpx/GRAPH_REPORT.md) |
+| Mixed corpus (code + paper + Arabic image) | Multi-type (5 files) | small corpus¹ | [`worked/mixed-corpus/review.md`](worked/mixed-corpus/review.md) |
+
+¹ Small corpora fit in a single context window — graph value is structural clarity, not token reduction. Reduction ratios grow with corpus size.
 
 Each includes the full graph output and an honest evaluation of what the skill got right and wrong.
 
@@ -194,7 +213,7 @@ No Neo4j required. No dashboards. No server. Runs entirely locally.
 ```
 graphify/
 ├── detect.py     detect file types, auto-exclude venvs/caches/node_modules; scan .graphify/memory/
-├── extract.py    AST extraction (Python, TypeScript, JavaScript, Go, Rust) + call-graph pass
+├── extract.py    AST extraction (13 languages via tree-sitter) + call-graph pass (INFERRED edges)
 ├── build.py      assemble NetworkX graph from extraction JSON; schema-validates before assembly
 ├── cluster.py    Leiden community detection, cohesion scoring
 ├── analyze.py    god nodes, bridge nodes, surprising connections, suggested questions, graph diff
@@ -210,7 +229,9 @@ graphify/
 skills/graphify/
 └── skill.md      the Claude Code skill — the full pipeline the agent runs step by step
 
+ARCHITECTURE.md   module responsibilities, extraction schema, how to add a language
 SECURITY.md       threat model, mitigations, vulnerability reporting
-tests/            163 tests, one file per module
+worked/           eval reports from real corpora (karpathy-repos, httpx, mixed-corpus)
+tests/            212 tests, one file per module
 pyproject.toml    pip install graphify  |  pip install graphify[mcp,neo4j,pdf,watch]
 ```
