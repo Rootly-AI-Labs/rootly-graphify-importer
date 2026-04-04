@@ -152,24 +152,31 @@ def detect(root: Path) -> dict:
 
     seen: set[Path] = set()
     all_files: list[Path] = []
+
     for scan_root in scan_paths:
-        for p in sorted(scan_root.rglob("*")):
-            if p not in seen:
-                seen.add(p)
-                all_files.append(p)
+        in_memory_tree = memory_dir.exists() and str(scan_root).startswith(str(memory_dir))
+        import os
+        for dirpath, dirnames, filenames in os.walk(scan_root):
+            dp = Path(dirpath)
+            if not in_memory_tree:
+                # Prune noise dirs in-place so os.walk never descends into them
+                dirnames[:] = [
+                    d for d in dirnames
+                    if not d.startswith(".") and not _is_noise_dir(d)
+                ]
+            for fname in filenames:
+                p = dp / fname
+                if p not in seen:
+                    seen.add(p)
+                    all_files.append(p)
 
     for p in all_files:
-        if not p.is_file():
-            continue
-        # For memory dir files, don't apply hidden/noise filtering
+        # For memory dir files, skip hidden/noise filtering
         in_memory = memory_dir.exists() and str(p).startswith(str(memory_dir))
         if not in_memory:
-            try:
-                parts = p.relative_to(root).parts
-            except ValueError:
-                continue
-            # Skip hidden dirs and known noise dirs
-            if any(part.startswith(".") or _is_noise_dir(part) for part in parts):
+            # Hidden files are already excluded via dir pruning above,
+            # but catch hidden files at the root level
+            if p.name.startswith("."):
                 continue
         if _is_sensitive(p):
             skipped_sensitive.append(str(p))
@@ -221,8 +228,8 @@ def save_manifest(files: dict[str, list[str]], manifest_path: str = _MANIFEST_PA
         for f in file_list:
             try:
                 manifest[f] = Path(f).stat().st_mtime
-            except Exception:
-                pass
+            except OSError:
+                pass  # file deleted between detect() and manifest write — skip it
     Path(manifest_path).parent.mkdir(parents=True, exist_ok=True)
     Path(manifest_path).write_text(json.dumps(manifest, indent=2))
 

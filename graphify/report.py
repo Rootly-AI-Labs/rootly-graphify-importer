@@ -119,10 +119,15 @@ def generate(
 
     if suggested_questions:
         lines += ["", "## Suggested Questions"]
-        lines.append("_Questions this graph is uniquely positioned to answer:_")
-        lines.append("")
-        for q in suggested_questions:
-            lines.append(f"- **{q['question']}**")
-            lines.append(f"  _{q['why']}_")
+        no_signal = len(suggested_questions) == 1 and suggested_questions[0].get("type") == "no_signal"
+        if no_signal:
+            lines.append(f"_{suggested_questions[0]['why']}_")
+        else:
+            lines.append("_Questions this graph is uniquely positioned to answer:_")
+            lines.append("")
+            for q in suggested_questions:
+                if q.get("question"):
+                    lines.append(f"- **{q['question']}**")
+                    lines.append(f"  _{q['why']}_")
 
     return "\n".join(lines)

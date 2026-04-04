@@ -61,3 +61,58 @@ def clear_cache(root: Path = Path(".")) -> None:
     d = cache_dir(root)
     for f in d.glob("*.json"):
         f.unlink()
+
+
+def check_semantic_cache(
+    files: list[str],
+    root: Path = Path("."),
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Check semantic extraction cache for a list of absolute file paths.
+
+    Returns (cached_nodes, cached_edges, uncached_files).
+    Uncached files need Claude extraction; cached files are merged directly.
+    """
+    cached_nodes: list[dict] = []
+    cached_edges: list[dict] = []
+    uncached: list[str] = []
+
+    for fpath in files:
+        result = load_cached(Path(fpath), root)
+        if result is not None:
+            cached_nodes.extend(result.get("nodes", []))
+            cached_edges.extend(result.get("edges", []))
+        else:
+            uncached.append(fpath)
+
+    return cached_nodes, cached_edges, uncached
+
+
+def save_semantic_cache(
+    nodes: list[dict],
+    edges: list[dict],
+    root: Path = Path("."),
+) -> int:
+    """Save semantic extraction results to cache, keyed by source_file.
+
+    Groups nodes and edges by source_file, then saves one cache entry per file.
+    Returns the number of files cached.
+    """
+    from collections import defaultdict
+
+    by_file: dict[str, dict] = defaultdict(lambda: {"nodes": [], "edges": []})
+    for n in nodes:
+        src = n.get("source_file", "")
+        if src:
+            by_file[src]["nodes"].append(n)
+    for e in edges:
+        src = e.get("source_file", "")
+        if src:
+            by_file[src]["edges"].append(e)
+
+    saved = 0
+    for fpath, result in by_file.items():
+        p = Path(fpath)
+        if p.exists():
+            save_cached(p, result, root)
+            saved += 1
+    return saved

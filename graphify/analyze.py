@@ -332,6 +332,18 @@ def suggest_questions(
                 "why": f"Cohesion score {score} — nodes in this community are weakly interconnected.",
             })
 
+    if not questions:
+        return [{
+            "type": "no_signal",
+            "question": None,
+            "why": (
+                "Not enough signal to generate questions. "
+                "This usually means the corpus has no AMBIGUOUS edges, no bridge nodes, "
+                "no INFERRED relationships, and all communities are tightly cohesive. "
+                "Add more files or run with --mode deep to extract richer edges."
+            ),
+        }]
+
     return questions[:top_n]
 
 

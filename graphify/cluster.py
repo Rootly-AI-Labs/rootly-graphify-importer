@@ -1,7 +1,6 @@
 """Leiden community detection on NetworkX graphs. Splits oversized communities. Returns cohesion scores."""
 from __future__ import annotations
 import networkx as nx
-from graspologic.partition import leiden
 
 
 def build_graph(nodes: list[dict], edges: list[dict]) -> nx.Graph:
@@ -37,10 +36,24 @@ def cluster(G: nx.Graph) -> dict[int, list[str]]:
     if G.number_of_edges() == 0:
         return {i: [n] for i, n in enumerate(sorted(G.nodes))}
 
-    partition: dict[str, int] = leiden(G)
+    from graspologic.partition import leiden  # lazy — avoids 15s numba JIT on import
+
+    # Leiden warns and drops isolates — handle them separately
+    isolates = [n for n in G.nodes() if G.degree(n) == 0]
+    connected_nodes = [n for n in G.nodes() if G.degree(n) > 0]
+    connected = G.subgraph(connected_nodes)
+
     raw: dict[int, list[str]] = {}
-    for node, cid in partition.items():
-        raw.setdefault(cid, []).append(node)
+    if connected.number_of_nodes() > 0:
+        partition: dict[str, int] = leiden(connected)
+        for node, cid in partition.items():
+            raw.setdefault(cid, []).append(node)
+
+    # Each isolate becomes its own single-node community
+    next_cid = max(raw.keys(), default=-1) + 1
+    for node in isolates:
+        raw[next_cid] = [node]
+        next_cid += 1
 
     # Split oversized communities
     max_size = max(_MIN_SPLIT_SIZE, int(G.number_of_nodes() * _MAX_COMMUNITY_FRACTION))
@@ -63,6 +76,7 @@ def _split_community(G: nx.Graph, nodes: list[str]) -> list[list[str]]:
         # No edges — split into individual nodes
         return [[n] for n in sorted(nodes)]
     try:
+        from graspologic.partition import leiden
         sub_partition: dict[str, int] = leiden(subgraph)
         sub_communities: dict[int, list[str]] = {}
         for node, cid in sub_partition.items():
