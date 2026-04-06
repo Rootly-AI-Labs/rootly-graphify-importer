@@ -832,6 +832,11 @@ def push_to_neo4j(
     def _safe_rel(relation: str) -> str:
         return re.sub(r"[^A-Z0-9_]", "_", relation.upper().replace(" ", "_").replace("-", "_")) or "RELATED_TO"
 
+    def _safe_label(label: str) -> str:
+        """Sanitize a Neo4j node label to prevent Cypher injection."""
+        sanitized = re.sub(r"[^A-Za-z0-9_]", "", label)
+        return sanitized if sanitized else "Entity"
+
     driver = GraphDatabase.driver(uri, auth=(user, password))
     nodes_pushed = 0
     edges_pushed = 0
@@ -843,7 +848,7 @@ def push_to_neo4j(
             cid = node_community.get(node_id)
             if cid is not None:
                 props["community"] = cid
-            ftype = data.get("file_type", "Entity").capitalize()
+            ftype = _safe_label(data.get("file_type", "Entity").capitalize())
             session.run(
                 f"MERGE (n:{ftype} {{id: $id}}) SET n += $props",
                 id=node_id,
