@@ -10,6 +10,11 @@ from pathlib import Path
 from graphify.security import safe_fetch, safe_fetch_text, validate_url
 
 
+def _yaml_str(s: str) -> str:
+    """Escape a string for embedding in a YAML double-quoted scalar."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ").replace("\r", " ")
+
+
 def _safe_filename(url: str, suffix: str) -> str:
     """Turn a URL into a safe filename."""
     parsed = urllib.parse.urlparse(url)
@@ -106,7 +111,7 @@ def _fetch_webpage(url: str, author: str | None, contributor: str | None) -> tup
     content = f"""---
 source_url: {url}
 type: webpage
-title: "{title}"
+title: "{_yaml_str(title)}"
 captured_at: {now}
 contributor: {contributor or author or 'unknown'}
 ---
@@ -248,7 +253,7 @@ def save_query_result(
         "---",
         f'type: "{query_type}"',
         f'date: "{now.isoformat()}"',
-        f'question: "{re.sub(chr(10) + chr(13), " ", question).replace(chr(34), chr(39))}"',
+        f'question: "{_yaml_str(question)}"',
         'contributor: "graphify"',
     ]
     if source_nodes:
