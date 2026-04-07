@@ -28,6 +28,8 @@ dependencies = [
     "tree-sitter-php",
     "tree-sitter-swift",
     "tree-sitter-lua",
+    "tree-sitter-zig",
+    "tree-sitter-powershell",
 ]
 
 [project.urls]
