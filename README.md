@@ -1,4 +1,4 @@
-# graphify
+# incident-graphify
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
@@ -6,41 +6,42 @@
 [![PyPI](https://img.shields.io/pypi/v/graphifyy)](https://pypi.org/project/graphifyy/)
 [![Sponsor](https://img.shields.io/badge/sponsor-safishamsi-ea4aaa?logo=github-sponsors)](https://github.com/sponsors/safishamsi)
 
-**An AI coding assistant skill.** Type `/graphify` in Claude Code, Codex, OpenCode, OpenClaw, or Factory Droid - it reads your files, builds a knowledge graph, and gives you back structure you didn't know was there. Understand a codebase faster. Find the "why" behind architectural decisions.
+**A Rootly-first incident knowledge graph tool.** Connect the Rootly API, collect incidents and retrospectives for a selected time window, export them into a local corpus, and turn that corpus into a queryable knowledge graph. Use `graphify rootly` for collection and `/graphify` in Claude Code, Codex, OpenCode, OpenClaw, or Factory Droid when you want deeper graph analysis inside an assistant.
 
-Fully multimodal. Drop in code, PDFs, markdown, screenshots, diagrams, whiteboard photos, even images in other languages - graphify uses Claude vision to extract concepts and relationships from all of it and connects them into one graph.
+This fork is optimized for incident review. It pulls the last 7, 30, or 90 days of Rootly incidents, preserves the raw incident and retrospective data locally, and surfaces the clusters, god nodes, and surprising connections across your incident history. It still works on any folder of code, docs, papers, or images, but the primary workflow starts with Rootly.
 
-> Andrej Karpathy keeps a `/raw` folder where he drops papers, tweets, screenshots, and notes. graphify is the answer to that problem - 71.5x fewer tokens per query vs reading the raw files, persistent across sessions, honest about what it found vs guessed.
+Run this in your terminal:
 
-```
-/graphify .                        # works on any folder - your codebase, notes, papers, anything
-```
-
-```
-graphify-out/
-├── graph.html       interactive graph - click nodes, search, filter by community
-├── GRAPH_REPORT.md  god nodes, surprising connections, suggested questions
-├── graph.json       persistent graph - query weeks later without re-reading
-└── cache/           SHA256 cache - re-runs only process changed files
+```bash
+graphify rootly --days 30
 ```
 
-Add a `.graphifyignore` file to exclude folders you don't want in the graph:
-
+```text
+graphify-rootly-data/
+|-- incidents/          one markdown + one raw JSON file per incident
+|-- retrospectives/     one markdown + one raw JSON file per retrospective
+|-- rootly-export.json  combined export
+`-- graphify-out/
+    |-- graph.html      interactive graph for incident exploration
+    |-- GRAPH_REPORT.md god nodes, communities, and suggested questions
+    `-- graph.json      persistent graph for later query/path/explain
 ```
-# .graphifyignore
-vendor/
-node_modules/
-dist/
-*.generated.py
-```
 
-Same syntax as `.gitignore`. Patterns match against file paths relative to the folder you run graphify on.
+Then run this in Claude Code, Codex, OpenCode, OpenClaw, or Factory Droid:
+
+```text
+/graphify ./graphify-rootly-data --mode deep
+```
 
 ## How it works
 
-graphify runs in two passes. First, a deterministic AST pass extracts structure from code files (classes, functions, imports, call graphs, docstrings, rationale comments) with no LLM needed. Second, Claude subagents run in parallel over docs, papers, and images to extract concepts, relationships, and design rationale. The results are merged into a NetworkX graph, clustered with Leiden community detection, and exported as interactive HTML, queryable JSON, and a plain-language audit report.
+`incident-graphify` has a Rootly collection phase and a graph analysis phase.
 
-**Clustering is graph-topology-based — no embeddings.** Leiden finds communities by edge density. The semantic similarity edges that Claude extracts (`semantically_similar_to`, marked INFERRED) are already in the graph, so they influence community detection directly. The graph structure is the similarity signal — no separate embedding step or vector database needed.
+1. **Deterministic Rootly collection.** Validate the API key, choose a 7, 30, or 90 day window, fetch incidents whose `started_at` falls inside that window, fetch retrospectives linked to those incidents, and write everything to a local corpus directory.
+2. **Initial Rootly graph build.** The built-in Rootly runner creates one node per incident and retrospective, links retrospectives to incidents by Incident ID, clusters the graph, and writes `graph.html`, `GRAPH_REPORT.md`, and `graph.json`.
+3. **Optional deep enrichment.** Run `/graphify ./graphify-rootly-data --mode deep` on the exported corpus to dispatch parallel subagents over the markdown files and infer cross-incident themes, rationale, and conceptual links.
+
+**Clustering is graph-topology-based - no embeddings.** Leiden finds communities by edge density. The semantic similarity edges (`semantically_similar_to`, marked `INFERRED`) are already in the graph, so they influence community detection directly. The graph structure is the similarity signal - no separate embedding step or vector database is required.
 
 Every relationship is tagged `EXTRACTED` (found directly in source), `INFERRED` (reasonable inference, with a confidence score), or `AMBIGUOUS` (flagged for review). You always know what was found vs guessed.
 
@@ -49,10 +50,10 @@ Every relationship is tagged `EXTRACTED` (found directly in source), `INFERRED` 
 **Requires:** Python 3.10+ and one of: [Claude Code](https://claude.ai/code), [Codex](https://openai.com/codex), [OpenCode](https://opencode.ai), [OpenClaw](https://openclaw.ai), or [Factory Droid](https://factory.ai)
 
 ```bash
-pip install graphifyy && graphify install
+pip install "graphifyy[rootly]" && graphify install
 ```
 
-> The PyPI package is temporarily named `graphifyy` while the `graphify` name is being reclaimed. The CLI and skill command are still `graphify`.
+> The PyPI package is still `graphifyy` and the CLI is still `graphify`. This README uses the product name `incident-graphify` to describe the Rootly-focused fork.
 
 ### Platform support
 
@@ -65,13 +66,62 @@ pip install graphifyy && graphify install
 | OpenClaw | `graphify install --platform claw` |
 | Factory Droid | `graphify install --platform droid` |
 
-Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for parallel extraction. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw uses sequential extraction (parallel agent support is still early on that platform).
+Codex users also need `multi_agent = true` under `[features]` in `~/.codex/config.toml` for deep semantic extraction. Factory Droid uses the `Task` tool for parallel subagent dispatch. OpenClaw uses sequential extraction (parallel agent support is still early on that platform). The basic `graphify rootly` collection flow does not require multi-agent support.
 
-Then open your AI coding assistant and type:
+### Rootly setup
 
-```
-/graphify .
-```
+1. Install the Rootly extras and assistant integration:
+
+   ```bash
+   pip install "graphifyy[rootly]"
+   graphify install
+   ```
+
+2. Provide your Rootly API key. You can either set it in your shell:
+
+   ```powershell
+   $env:ROOTLY_API_KEY="rootly_..."
+   ```
+
+   or place it in a local `.env` file:
+
+   ```dotenv
+   ROOTLY_API_KEY=rootly_...
+   ```
+
+   `graphify rootly --days 30` will read `.env` interactively if present. `--api-key-env ROOTLY_API_KEY` reads the actual environment variable.
+
+3. Collect incidents for the time window you want:
+
+   ```bash
+   graphify rootly --days 30
+   ```
+
+   Non-interactive example:
+
+   ```bash
+   graphify rootly --api-key-env ROOTLY_API_KEY --days 30 --mode standard --output graphify-rootly-data
+   ```
+
+4. Review the generated outputs:
+
+   - `graphify-rootly-data/graphify-out/graph.html`
+   - `graphify-rootly-data/graphify-out/GRAPH_REPORT.md`
+   - `graphify-rootly-data/graphify-out/graph.json`
+
+5. Optional: rerun semantic enrichment on the exported corpus from your assistant:
+
+   ```text
+   /graphify ./graphify-rootly-data --mode deep
+   ```
+
+What `graphify rootly` does:
+
+- Validates the Rootly API key
+- Selects incidents in the chosen 7/30/90 day window using incident `started_at`
+- Fetches linked retrospectives
+- Exports markdown plus raw JSON locally
+- Builds the initial report, graph JSON, and HTML visualization
 
 ### Make your assistant always use the graph (recommended)
 
@@ -119,7 +169,16 @@ When the user types `/graphify`, invoke the Skill tool with `skill: "graphify"` 
 
 ## Usage
 
-```
+```text
+graphify rootly                                  # interactive Rootly import flow
+graphify rootly --days 30                        # collect incidents started in the last 30 days
+graphify rootly --api-key-env ROOTLY_API_KEY     # non-interactive key lookup from env
+graphify rootly --output ./my-rootly-corpus      # write the exported Rootly corpus to a custom folder
+
+/graphify ./graphify-rootly-data                 # analyze the exported Rootly corpus in your assistant
+/graphify ./graphify-rootly-data --mode deep     # add more aggressive INFERRED edges across incidents and retrospectives
+/graphify ./graphify-rootly-data --update        # re-extract only changed files in the exported corpus
+
 /graphify                          # run on current directory
 /graphify ./raw                    # run on a specific folder
 /graphify ./raw --mode deep        # more aggressive INFERRED edge extraction
@@ -194,36 +253,3 @@ Works with any mix of file types:
 **Git hooks** (`graphify hook install`) - installs post-commit and post-checkout hooks. Graph rebuilds automatically after every commit and every branch switch. If a rebuild fails, the hook exits with a non-zero code so git surfaces the error instead of silently continuing. No background process needed.
 
 **Wiki** (`--wiki`) - Wikipedia-style markdown articles per community and god node, with an `index.md` entry point. Point any agent at `index.md` and it can navigate the knowledge base by reading files instead of parsing JSON.
-
-## Worked examples
-
-| Corpus | Files | Reduction | Output |
-|--------|-------|-----------|--------|
-| Karpathy repos + 5 papers + 4 images | 52 | **71.5x** | [`worked/karpathy-repos/`](worked/karpathy-repos/) |
-| graphify source + Transformer paper | 4 | **5.4x** | [`worked/mixed-corpus/`](worked/mixed-corpus/) |
-| httpx (synthetic Python library) | 6 | ~1x | [`worked/httpx/`](worked/httpx/) |
-
-Token reduction scales with corpus size. 6 files fits in a context window anyway, so graph value there is structural clarity, not compression. At 52 files (code + papers + images) you get 71x+. Each `worked/` folder has the raw input files and the actual output (`GRAPH_REPORT.md`, `graph.json`) so you can run it yourself and verify the numbers.
-
-## Privacy
-
-graphify sends file contents to your AI coding assistant's underlying model API for semantic extraction of docs, papers, and images — Anthropic (Claude Code), OpenAI (Codex), or whichever provider your platform uses. Code files are processed locally via tree-sitter AST — no file contents leave your machine for code. No telemetry, usage tracking, or analytics of any kind. The only network calls are to your platform's model API during extraction, using your own API key.
-
-## Tech stack
-
-NetworkX + Leiden (graspologic) + tree-sitter + vis.js. Semantic extraction via Claude (Claude Code), GPT-4 (Codex), or whichever model your platform runs. No Neo4j required, no server, runs entirely locally.
-
-## Star history
-
-[![Star History Chart](https://api.star-history.com/svg?repos=safishamsi/graphify&type=Date)](https://star-history.com/#safishamsi/graphify&Date)
-
-<details>
-<summary>Contributing</summary>
-
-**Worked examples** are the most trust-building contribution. Run `/graphify` on a real corpus, save output to `worked/{slug}/`, write an honest `review.md` evaluating what the graph got right and wrong, submit a PR.
-
-**Extraction bugs** - open an issue with the input file, the cache entry (`graphify-out/cache/`), and what was missed or invented.
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for module responsibilities and how to add a language.
-
-</details>
