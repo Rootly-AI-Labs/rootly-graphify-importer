@@ -45,7 +45,8 @@ pdf = ["pypdf", "html2text"]
 watch = ["watchdog"]
 leiden = ["graspologic"]
 office = ["python-docx", "openpyxl"]
-all = ["mcp", "neo4j", "pypdf", "html2text", "watchdog", "graspologic", "python-docx", "openpyxl"]
+rootly = ["questionary>=2.0"]
+all = ["mcp", "neo4j", "pypdf", "html2text", "watchdog", "graspologic", "python-docx", "openpyxl", "questionary>=2.0"]
 
 [project.scripts]
 graphify = "graphify.__main__:main"

@@ -302,6 +302,11 @@ def main() -> None:
         print("  claw uninstall          remove graphify section from AGENTS.md")
         print("  droid install           write graphify section to AGENTS.md (Factory Droid)")
         print("  droid uninstall         remove graphify section from AGENTS.md")
+        print("  rootly                  interactive Rootly incident/retrospective import flow")
+        print("    --days 7|30|90        skip date-range prompt")
+        print("    --mode <name>         skip mode prompt (standard|deep|no_viz|obsidian|update)")
+        print("    --api-key-env VAR     read API key from environment variable VAR")
+        print("    --output <dir>        output directory (default: ./graphify-rootly-data)")
         print()
         return
 
@@ -366,10 +371,88 @@ def main() -> None:
                 pass
         result = run_benchmark(graph_path, corpus_words=corpus_words)
         print_benchmark(result)
+    elif cmd == "rootly":
+        _run_rootly_command(sys.argv[2:])
     else:
         print(f"error: unknown command '{cmd}'", file=sys.stderr)
         print("Run 'graphify --help' for usage.", file=sys.stderr)
         sys.exit(1)
+
+
+def _run_rootly_command(args: list[str]) -> None:
+    """Parse flags for `graphify rootly` and delegate to rootly_flow."""
+    api_key_override: str | None = None
+    days_override: int | None = None
+    mode_override: str | None = None
+    output_dir_override: Path | None = None
+
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--api-key-env",) and i + 1 < len(args):
+            env_var = args[i + 1]
+            val = __import__("os").environ.get(env_var, "").strip()
+            if not val:
+                print(f"error: environment variable {env_var!r} is not set or empty", file=sys.stderr)
+                sys.exit(1)
+            api_key_override = val
+            i += 2
+        elif arg.startswith("--api-key-env="):
+            env_var = arg.split("=", 1)[1]
+            val = __import__("os").environ.get(env_var, "").strip()
+            if not val:
+                print(f"error: environment variable {env_var!r} is not set or empty", file=sys.stderr)
+                sys.exit(1)
+            api_key_override = val
+            i += 1
+        elif arg in ("--days",) and i + 1 < len(args):
+            try:
+                days_override = int(args[i + 1])
+            except ValueError:
+                print(f"error: --days expects an integer (7, 30, or 90)", file=sys.stderr)
+                sys.exit(1)
+            i += 2
+        elif arg.startswith("--days="):
+            try:
+                days_override = int(arg.split("=", 1)[1])
+            except ValueError:
+                print(f"error: --days expects an integer (7, 30, or 90)", file=sys.stderr)
+                sys.exit(1)
+            i += 1
+        elif arg in ("--mode",) and i + 1 < len(args):
+            mode_override = args[i + 1]
+            i += 2
+        elif arg.startswith("--mode="):
+            mode_override = arg.split("=", 1)[1]
+            i += 1
+        elif arg in ("--output",) and i + 1 < len(args):
+            output_dir_override = Path(args[i + 1])
+            i += 2
+        elif arg.startswith("--output="):
+            output_dir_override = Path(arg.split("=", 1)[1])
+            i += 1
+        elif arg in ("-h", "--help"):
+            print("Usage: graphify rootly [options]")
+            print()
+            print("Options:")
+            print("  --days 7|30|90        date range (skips the TUI prompt)")
+            print("  --mode <name>         run mode: standard|deep|no_viz|obsidian|update (skips prompt)")
+            print("  --api-key-env VAR     read Rootly API key from env var VAR (skips masked input)")
+            print("  --output <dir>        output directory (default: ./graphify-rootly-data)")
+            print()
+            print("When flags are omitted, an interactive TUI guides you through each step.")
+            return
+        else:
+            print(f"error: unknown flag '{arg}'. Run 'graphify rootly --help'.", file=sys.stderr)
+            sys.exit(1)
+
+    from graphify.rootly_flow import run_rootly_command
+    run_rootly_command(
+        api_key_override=api_key_override,
+        days_override=days_override,
+        mode_override=mode_override,
+        output_dir_override=output_dir_override,
+    )
 
 
 if __name__ == "__main__":

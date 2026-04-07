@@ -34,6 +34,39 @@ Turn any folder of files into a navigable knowledge graph with community detecti
 /graphify explain "SwinTransformer"                   # plain-language explanation of a node
 ```
 
+## Rootly mode
+
+Use graphify on Rootly incidents and retrospectives through a guided terminal flow.
+
+```bash
+graphify rootly                                  # interactive TUI (API key + date range + mode prompts)
+graphify rootly --days 30                        # skip date-range prompt
+graphify rootly --mode deep                      # skip mode prompt
+graphify rootly --api-key-env ROOTLY_API_KEY     # read key from env var (non-interactive)
+graphify rootly --output ./my-rootly-corpus      # custom output directory
+```
+
+This will:
+1. Prompt for a Rootly API key (masked input, session-only — never written to disk)
+2. Ask for a date range: past 7, 30, or 90 days (filters by incident `started_at`)
+3. Export incident and retrospective data into a local corpus directory (`./graphify-rootly-data/`)
+4. Run graphify on that exported corpus only
+
+The exported corpus is isolated from your source repo. `.gitignore` is updated automatically because retrospectives may contain sensitive incident data.
+
+After the run you can enhance the graph with LLM semantic extraction by running:
+
+```
+/graphify ./graphify-rootly-data
+```
+
+inside Claude Code.
+
+- If the user wants to analyze Rootly incidents or postmortems, use `graphify rootly`.
+- This launches an interactive flow to collect a Rootly API key, choose a date range, export Rootly data locally, and run graphify only on that exported corpus.
+
+---
+
 ## What graphify is for
 
 graphify is built around Andrej Karpathy's /raw folder workflow: drop anything into a folder - papers, tweets, screenshots, code, notes - and get a structured knowledge graph that shows you what you didn't know was connected.

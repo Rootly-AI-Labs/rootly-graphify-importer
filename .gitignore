@@ -19,3 +19,6 @@ graphify-out/
 .claude/
 skills/
 docs/superpowers/
+
+# Rootly exported corpus (may contain sensitive data)
+graphify-rootly-data/
