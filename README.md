@@ -72,7 +72,7 @@ run graphify on graphify-rootly-data --mode deep
 
 ---
 
-### Step 3 — Re-apply Rootly colors *(terminal)*
+### Step 3: Re-apply Rootly colors *(terminal)*
 
 After semantic enrichment, restore the Rootly-specific visualization with severity colors, triggered alert toggles, and team/service layers.
 
