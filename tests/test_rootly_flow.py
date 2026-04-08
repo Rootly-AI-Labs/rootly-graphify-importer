@@ -91,21 +91,27 @@ def _write_corpus(tmp_path: Path) -> None:
         "- **Incident ID:** 101\n"
         "- **Title:** API latency spike\n"
         "- **Severity:** SEV-2\n"
-        "- **Status:** resolved\n\n"
+        "- **Status:** resolved\n"
+        "- **Started At:** 2026-04-01T11:00:00Z\n"
+        "- **Services:** Payments API\n"
+        "- **Teams:** SRE\n\n"
         "## Description\n\nLatency exceeded SLO.\n",
         encoding="utf-8",
     )
 
-    retro_dir = tmp_path / "retrospectives"
-    retro_dir.mkdir()
-    (retro_dir / "retrospective_r1.md").write_text(
-        "# Rootly Retrospective: Incident 101\n\n"
-        "- **Retrospective ID:** r1\n"
-        "- **Incident ID:** 101\n"
-        "- **Title:** API latency spike\n"
-        "- **Status:** published\n\n"
-        "## Retrospective Content\n\nRoot cause: load balancer.\n\n"
-        "## Metadata\n\n- Date Range Preset: past_30d\n",
+    alert_dir = tmp_path / "alerts"
+    alert_dir.mkdir()
+    (alert_dir / "alert_a1.md").write_text(
+        "# Rootly Alert: a1\n\n"
+        "- **Alert ID:** a1\n"
+        "- **Summary:** CPU spike on web-01\n"
+        "- **Status:** resolved\n"
+        "- **Source:** datadog\n"
+        "- **Noise:** not_noise\n"
+        "- **Started At:** 2026-04-01T10:55:00Z\n"
+        "- **Ended At:** 2026-04-01T11:10:00Z\n"
+        "- **Incident ID:** 101\n\n"
+        "## Metadata\n\n- Source: Rootly API\n",
         encoding="utf-8",
     )
 
@@ -116,9 +122,8 @@ def test_extract_markdown_corpus_nodes(tmp_path):
     extraction = _extract_markdown_corpus(tmp_path)
 
     node_ids = {n["id"] for n in extraction["nodes"]}
-    # Should have at least one incident and one retrospective node
     assert any("incident" in nid for nid in node_ids)
-    assert any("retrospective" in nid for nid in node_ids)
+    assert any("alert" in nid for nid in node_ids)
 
 
 def test_extract_markdown_corpus_edge(tmp_path):
@@ -126,9 +131,9 @@ def test_extract_markdown_corpus_edge(tmp_path):
     _write_corpus(tmp_path)
     extraction = _extract_markdown_corpus(tmp_path)
 
-    # Should produce a has_retrospective edge
+    # Alert linked to incident should produce a triggered edge
     relations = [e["relation"] for e in extraction["edges"]]
-    assert "has_retrospective" in relations
+    assert "triggered" in relations
 
 
 def test_extract_markdown_corpus_empty(tmp_path):

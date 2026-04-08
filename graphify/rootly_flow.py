@@ -70,6 +70,7 @@ def run_rootly_command(
     days_override: int | None = None,
     mode_override: str | None = None,
     output_dir_override: Path | None = None,
+    data_override: str | None = None,
 ) -> None:
     """Entry point for `graphify rootly`. Runs the full Rootly flow."""
 
@@ -80,6 +81,7 @@ def run_rootly_command(
         days_override=days_override,
         mode_override=mode_override,
         output_dir_override=output_dir_override,
+        data_override=data_override,
     )
 
     # ---- validate API key ----
@@ -98,40 +100,55 @@ def run_rootly_command(
     # ---- fetch Rootly data ----
     client = RootlyClient(config.api_key)
 
-    print(
-        f"  Fetching incidents from {config.start_at.strftime('%Y-%m-%d')} "
-        f"to {config.end_at.strftime('%Y-%m-%d')}…"
-    )
-    try:
-        incidents = client.fetch_incidents(config.start_at, config.end_at)
-    except Exception as exc:
-        print(f"\n  Failed to fetch incidents: {exc}", file=sys.stderr)
-        sys.exit(1)
+    # ---- incidents ----
+    incidents = []
+    if config.collect_incidents:
+        print(
+            f"  Fetching incidents from {config.start_at.strftime('%Y-%m-%d')} "
+            f"to {config.end_at.strftime('%Y-%m-%d')}..."
+        )
+        try:
+            incidents = client.fetch_incidents(config.start_at, config.end_at)
+        except Exception as exc:
+            print(f"\n  Failed to fetch incidents: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"  Found {len(incidents)} incident(s).")
+    else:
+        print("  Skipping incidents (not selected).")
 
-    print(f"  Found {len(incidents)} incident(s).")
-
-    if not incidents:
+    if config.collect_incidents and not incidents:
         print("  No incidents found for the selected date range.")
         print("  Writing empty manifest and exiting.")
         from graphify.rootly_export import export_rootly_corpus
         export_rootly_corpus(config.output_dir, [], [], [], config)
         return
 
-    print(f"  Fetching triggered alerts for {len(incidents)} incident(s)...")
-    try:
-        alerts = client.fetch_alerts(incidents)
-    except Exception as exc:
-        print(f"  Warning: could not fetch alerts: {exc}")
-        alerts = []
-    print(f"  Found {len(alerts)} triggered alert(s).")
+    # ---- alerts ----
+    alerts = []
+    if config.collect_alerts:
+        if not incidents:
+            print("  Skipping alerts (no incidents to link against).")
+        else:
+            print(f"  Fetching triggered alerts for {len(incidents)} incident(s)...")
+            try:
+                alerts = client.fetch_alerts(incidents)
+            except Exception as exc:
+                print(f"  Warning: could not fetch alerts: {exc}")
+            print(f"  Found {len(alerts)} triggered alert(s).")
+    else:
+        print("  Skipping alerts (not selected).")
 
-    print("  Fetching teams…")
-    try:
-        teams = client.fetch_teams()
-    except Exception as exc:
-        print(f"  Warning: could not fetch teams: {exc}")
-        teams = []
-    print(f"  Found {len(teams)} team(s).")
+    # ---- teams ----
+    teams = []
+    if config.collect_teams:
+        print("  Fetching teams...")
+        try:
+            teams = client.fetch_teams()
+        except Exception as exc:
+            print(f"  Warning: could not fetch teams: {exc}")
+        print(f"  Found {len(teams)} team(s).")
+    else:
+        print("  Skipping teams (not selected).")
 
     # ---- write corpus ----
     from graphify.rootly_export import export_rootly_corpus

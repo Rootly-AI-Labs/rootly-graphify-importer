@@ -14,11 +14,13 @@ from graphify.models_rootly import (
     GraphifyMode,
     RootlyFlowConfig,
     RootlyIncident,
-    RootlyRetrospective,
+    RootlyAlert,
+    RootlyTeam,
 )
 from graphify.rootly_export import (
     incident_to_markdown,
-    retrospective_to_markdown,
+    alert_to_markdown,
+    team_to_markdown,
     export_rootly_corpus,
 )
 
@@ -45,6 +47,8 @@ def _incident(id="101", title="API latency spike") -> RootlyIncident:
         severity="SEV-2",
         status="resolved",
         started_at="2026-04-01T11:00:00Z",
+        acknowledged_at="2026-04-01T11:05:00Z",
+        mitigated_at="2026-04-01T12:00:00Z",
         resolved_at="2026-04-01T12:30:00Z",
         description="Payments API latency exceeded SLO.",
         services=["Payments API"],
@@ -53,25 +57,28 @@ def _incident(id="101", title="API latency spike") -> RootlyIncident:
     )
 
 
-def _retro(id="retro-abc", incident_id="101") -> RootlyRetrospective:
-    return RootlyRetrospective(
+def _alert(id="alert-1", incident_id="101") -> RootlyAlert:
+    return RootlyAlert(
         id=id,
+        summary="CPU spike on web-01",
+        status="resolved",
+        source="datadog",
+        noise="not_noise",
+        started_at="2026-04-01T10:55:00Z",
+        ended_at="2026-04-01T11:10:00Z",
+        service_ids=["svc-1"],
+        team_ids=["grp-1"],
         incident_id=incident_id,
-        incident_title="API latency spike",
-        status="published",
-        content="Root cause was a misconfigured load balancer.",
-        created_at="2026-04-02T09:00:00Z",
-        updated_at="2026-04-02T10:00:00Z",
-        started_at="2026-04-01T11:00:00Z",
-        mitigated_at="2026-04-01T12:00:00Z",
-        resolved_at="2026-04-01T12:30:00Z",
-        url="https://app.rootly.com/post_mortems/retro-abc",
         raw={"id": id},
     )
 
 
+def _team(id="team-1", name="SRE") -> RootlyTeam:
+    return RootlyTeam(id=id, name=name, slug="sre", raw={"id": id})
+
+
 # ---------------------------------------------------------------------------
-# Markdown formatting
+# Markdown formatting — incidents
 # ---------------------------------------------------------------------------
 
 def test_incident_markdown_contains_title():
@@ -91,35 +98,55 @@ def test_incident_markdown_contains_description():
     assert "Payments API latency exceeded SLO" in md
 
 
-def test_retrospective_markdown_contains_content(tmp_path):
-    config = _config(tmp_path)
-    md = retrospective_to_markdown(_retro(), config)
-    assert "Root cause was a misconfigured load balancer" in md
+def test_incident_markdown_no_api_key():
+    md = incident_to_markdown(_incident())
+    assert "rl_test_key" not in md
 
 
-def test_retrospective_markdown_contains_incident_id(tmp_path):
-    config = _config(tmp_path)
-    md = retrospective_to_markdown(_retro(incident_id="101"), config)
+def test_incident_markdown_contains_timeline_fields():
+    md = incident_to_markdown(_incident())
+    assert "Acknowledged At" in md
+    assert "Mitigated At" in md
+
+
+# ---------------------------------------------------------------------------
+# Markdown formatting — alerts
+# ---------------------------------------------------------------------------
+
+def test_alert_markdown_contains_summary():
+    md = alert_to_markdown(_alert())
+    assert "CPU spike on web-01" in md
+
+
+def test_alert_markdown_contains_source():
+    md = alert_to_markdown(_alert())
+    assert "datadog" in md
+
+
+def test_alert_markdown_contains_incident_id():
+    md = alert_to_markdown(_alert(incident_id="101"))
     assert "101" in md
 
 
-def test_retrospective_markdown_contains_preset(tmp_path):
-    config = _config(tmp_path)
-    md = retrospective_to_markdown(_retro(), config)
-    assert "past_30d" in md
+def test_alert_markdown_orphan_line():
+    alert = _alert(incident_id="")
+    alert.incident_id = ""
+    md = alert_to_markdown(alert)
+    assert "orphan" in md.lower() or "(none" in md.lower()
 
 
-def test_retrospective_markdown_no_api_key(tmp_path):
-    """API key must never appear in any exported markdown."""
-    config = _config(tmp_path)
-    md = retrospective_to_markdown(_retro(), config)
-    assert config.api_key not in md
+# ---------------------------------------------------------------------------
+# Markdown formatting — teams
+# ---------------------------------------------------------------------------
+
+def test_team_markdown_contains_name():
+    md = team_to_markdown(_team())
+    assert "SRE" in md
 
 
-def test_incident_markdown_no_api_key():
-    incident = _incident()
-    md = incident_to_markdown(incident)
-    assert "rl_test_key" not in md
+def test_team_markdown_contains_slug():
+    md = team_to_markdown(_team())
+    assert "sre" in md
 
 
 # ---------------------------------------------------------------------------
@@ -130,15 +157,17 @@ def test_export_creates_directory_structure(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
     incidents = [_incident("101"), _incident("102", "DB failure")]
-    retros = [_retro("r1", "101"), _retro("r2", "102")]
+    alerts = [_alert("a1", "101"), _alert("a2", "102")]
+    teams = [_team("t1", "SRE")]
 
-    corpus = export_rootly_corpus(output_dir, incidents, retros, config)
+    corpus = export_rootly_corpus(output_dir, incidents, alerts, teams, config)
 
     assert corpus == output_dir
     assert (output_dir / "incidents" / "incident_101.md").exists()
     assert (output_dir / "incidents" / "incident_102.md").exists()
-    assert (output_dir / "retrospectives" / "retrospective_r1.md").exists()
-    assert (output_dir / "retrospectives" / "retrospective_r2.md").exists()
+    assert (output_dir / "alerts" / "alert_a1.md").exists()
+    assert (output_dir / "alerts" / "alert_a2.md").exists()
+    assert (output_dir / "teams" / "team_t1.md").exists()
     assert (output_dir / "rootly-export.json").exists()
     assert (output_dir / "metadata" / "fetch_manifest.json").exists()
     assert (output_dir / "metadata" / "run_config.json").exists()
@@ -147,8 +176,7 @@ def test_export_creates_directory_structure(tmp_path):
 def test_export_raw_json_preserved(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
-    incidents = [_incident("55")]
-    export_rootly_corpus(output_dir, incidents, [], config)
+    export_rootly_corpus(output_dir, [_incident("55")], [], [], config)
 
     raw_path = output_dir / "incidents" / "incident_55.json"
     assert raw_path.exists()
@@ -156,26 +184,39 @@ def test_export_raw_json_preserved(tmp_path):
     assert data["id"] == "55"
 
 
+def test_export_alert_json_preserved(tmp_path):
+    output_dir = tmp_path / "rootly-data"
+    config = _config(output_dir)
+    export_rootly_corpus(output_dir, [], [_alert("a99")], [], config)
+
+    raw_path = output_dir / "alerts" / "alert_a99.json"
+    assert raw_path.exists()
+    data = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert data["id"] == "a99"
+
+
 def test_export_manifest_counts(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
     incidents = [_incident("1"), _incident("2")]
-    retros = [_retro("r1", "1")]
+    alerts = [_alert("a1", "1")]
+    teams = [_team("t1")]
 
-    export_rootly_corpus(output_dir, incidents, retros, config)
+    export_rootly_corpus(output_dir, incidents, alerts, teams, config)
 
     manifest = json.loads(
         (output_dir / "metadata" / "fetch_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["incident_count"] == 2
-    assert manifest["retrospective_count"] == 1
+    assert manifest["alert_count"] == 1
+    assert manifest["team_count"] == 1
     assert manifest["date_range_preset"] == "30d"
 
 
 def test_export_run_config_no_api_key(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
-    export_rootly_corpus(output_dir, [], [], config)
+    export_rootly_corpus(output_dir, [], [], [], config)
 
     run_config = json.loads(
         (output_dir / "metadata" / "run_config.json").read_text(encoding="utf-8")
@@ -187,25 +228,24 @@ def test_export_run_config_no_api_key(tmp_path):
 def test_export_combined_json(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
-    incidents = [_incident("11")]
-    retros = [_retro("r9", "11")]
-    export_rootly_corpus(output_dir, incidents, retros, config)
+    export_rootly_corpus(output_dir, [_incident("11")], [_alert("a1", "11")], [_team("t1")], config)
 
     combined = json.loads(
         (output_dir / "rootly-export.json").read_text(encoding="utf-8")
     )
     assert len(combined["incidents"]) == 1
-    assert len(combined["retrospectives"]) == 1
+    assert len(combined["alerts"]) == 1
+    assert len(combined["teams"]) == 1
 
 
 def test_export_empty_corpus_creates_manifests(tmp_path):
     output_dir = tmp_path / "rootly-data"
     config = _config(output_dir)
-    export_rootly_corpus(output_dir, [], [], config)
+    export_rootly_corpus(output_dir, [], [], [], config)
 
-    assert (output_dir / "metadata" / "fetch_manifest.json").exists()
     manifest = json.loads(
         (output_dir / "metadata" / "fetch_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["incident_count"] == 0
-    assert manifest["retrospective_count"] == 0
+    assert manifest["alert_count"] == 0
+    assert manifest["team_count"] == 0

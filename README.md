@@ -68,7 +68,6 @@ Runs parallel subagents over the incident corpus to infer cross-incident themes,
 run graphify on graphify-rootly-data --mode deep
 ```
 
-> This step costs tokens. For 121 incidents expect ~1–2 minutes and a few thousand tokens.
 
 ---
 

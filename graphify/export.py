@@ -4,6 +4,7 @@ import json
 import math
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -56,20 +57,249 @@ def _rootly_node_color(data: dict) -> tuple[str, bool]:
     return _ROOTLY_NODE_COLORS.get(node_type, "#6b7280"), False
 
 
+def _is_team_node(node_id: str, data: dict) -> bool:
+    source_file = str(data.get("source_file", "")).replace("\\", "/").lower()
+    label = str(data.get("label", ""))
+    return (
+        node_id.startswith("team_")
+        or "/teams/" in source_file
+        or label.startswith("Team ")
+        or label.startswith("Team:")
+    )
+
+
+def _team_key(node_id: str, data: dict) -> str:
+    candidates = [node_id, str(data.get("source_file", ""))]
+    pattern = r"team[_-]([0-9a-fA-F]{8}(?:[_-][0-9a-fA-F]{4}){3}[_-][0-9a-fA-F]{12})"
+    for candidate in candidates:
+        match = re.search(pattern, candidate)
+        if match:
+            return match.group(1).replace("_", "-").lower()
+    return node_id
+
+
+def _team_label_rank(label: str) -> tuple[int, int]:
+    generic = 0 if label.startswith("Team ") or label.startswith("Team:") else 1
+    return (generic, len(label))
+
+
+def _generic_node_color(node_id: str, data: dict, fallback: str) -> str:
+    if _is_team_node(node_id, data):
+        return "#22c55e"
+    if node_id.startswith("incident_"):
+        return "#ef4444"
+    if node_id.startswith("alert_"):
+        return "#eab308"
+    if node_id.startswith("concept_"):
+        return "#60a5fa"
+    if node_id.startswith("rationale_"):
+        return "#94a3b8"
+    if node_id.startswith("source_"):
+        return "#a78bfa"
+    return "#64748b"
+
+
+_TEMPORAL_TEXT_PATTERNS = (
+    ("Started At", re.compile(r"(?im)^\s*-\s+\*\*Started At:\*\*\s*(.+?)\s*$")),
+    ("Occurred At", re.compile(r"(?im)^\s*-\s+\*\*Occurred At:\*\*\s*(.+?)\s*$")),
+    ("Created At", re.compile(r"(?im)^\s*-\s+\*\*Created At:\*\*\s*(.+?)\s*$")),
+    ("Captured At", re.compile(r"(?im)^\s*-\s+\*\*Captured At:\*\*\s*(.+?)\s*$")),
+    ("Date", re.compile(r"(?im)^\s*-\s+\*\*Date:\*\*\s*(.+?)\s*$")),
+)
+_TEMPORAL_JSON_KEYS = (
+    "started_at",
+    "occurred_at",
+    "created_at",
+    "captured_at",
+    "acknowledged_at",
+    "ended_at",
+    "resolved_at",
+    "updated_at",
+)
+
+
+def _parse_timestamp(raw: object) -> tuple[int, str] | None:
+    value = str(raw or "").strip().strip("`")
+    if not value or value.lower() in {"n/a", "na", "none", "null", "unknown", "-"}:
+        return None
+    for parser in (
+        lambda text: datetime.fromisoformat(text.replace("Z", "+00:00")),
+        lambda text: datetime.strptime(text, "%Y-%m-%d"),
+        lambda text: datetime.strptime(text, "%a %b %d %Y %H:%M:%S %Z"),
+    ):
+        try:
+            dt = parser(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000), dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _find_json_value(data: object, key: str) -> object | None:
+    if isinstance(data, dict):
+        if key in data:
+            return data[key]
+        for value in data.values():
+            found = _find_json_value(value, key)
+            if found is not None:
+                return found
+    if isinstance(data, list):
+        for item in data:
+            found = _find_json_value(item, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _temporal_metadata_from_text(text: str) -> dict[str, object]:
+    for label, pattern in _TEMPORAL_TEXT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        parsed = _parse_timestamp(match.group(1))
+        if parsed:
+            timestamp_ms, timestamp_label = parsed
+            return {
+                "timestamp_ms": timestamp_ms,
+                "timestamp_label": timestamp_label,
+                "timestamp_source": label,
+            }
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _temporal_metadata_from_json(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    for key in _TEMPORAL_JSON_KEYS:
+        parsed = _parse_timestamp(_find_json_value(data, key))
+        if parsed:
+            timestamp_ms, timestamp_label = parsed
+            return {
+                "timestamp_ms": timestamp_ms,
+                "timestamp_label": timestamp_label,
+                "timestamp_source": key.replace("_", " ").title(),
+            }
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _source_temporal_metadata(source_file: str, captured_at: object) -> dict[str, object]:
+    parsed = _parse_timestamp(captured_at)
+    if parsed:
+        timestamp_ms, timestamp_label = parsed
+        return {
+            "timestamp_ms": timestamp_ms,
+            "timestamp_label": timestamp_label,
+            "timestamp_source": "Captured At",
+        }
+
+    path = Path(source_file)
+    if not source_file or not path.exists():
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    if path.suffix.lower() == ".json":
+        return _temporal_metadata_from_json(path)
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    metadata = _temporal_metadata_from_text(text)
+    if metadata["timestamp_ms"] is not None:
+        return metadata
+
+    sibling_json = path.with_suffix(".json")
+    if sibling_json.exists():
+        metadata = _temporal_metadata_from_json(sibling_json)
+        if metadata["timestamp_ms"] is not None:
+            return metadata
+
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _temporal_filter_data(G: nx.Graph) -> tuple[dict[str, dict[str, object]], list[dict[str, object]]]:
+    cache: dict[tuple[str, str], dict[str, object]] = {}
+    node_temporal: dict[str, dict[str, object]] = {}
+    timeline_points: dict[int, str] = {}
+
+    for node_id, data in G.nodes(data=True):
+        source_file = str(data.get("source_file", "")).strip()
+        captured_at = str(data.get("captured_at", "")).strip()
+        cache_key = (source_file, captured_at)
+        if cache_key not in cache:
+            cache[cache_key] = _source_temporal_metadata(source_file, captured_at)
+        metadata = cache[cache_key]
+        node_temporal[str(node_id)] = dict(metadata)
+        timestamp_ms = metadata.get("timestamp_ms")
+        timestamp_label = str(metadata.get("timestamp_label", "")).strip()
+        if isinstance(timestamp_ms, int) and timestamp_label:
+            timeline_points[timestamp_ms] = timestamp_label
+
+    timeline = [{"ms": ms, "label": timeline_points[ms]} for ms in sorted(timeline_points)]
+    return node_temporal, timeline
+
+
+def _team_filter_data(
+    G: nx.Graph,
+    cutoff: int = 3,
+) -> tuple[dict[str, list[str]], list[str]]:
+    team_nodes: dict[str, list[str]] = {}
+    team_labels: dict[str, str] = {}
+    node_teams: dict[str, set[str]] = {str(node_id): set() for node_id in G.nodes()}
+
+    for node_id, data in G.nodes(data=True):
+        node_id_str = str(node_id)
+        if not _is_team_node(node_id_str, data):
+            continue
+        team_key = _team_key(node_id_str, data)
+        label = re.sub(r"^Team:\s*", "", str(data.get("label", node_id))).strip()
+        if label:
+            team_nodes.setdefault(team_key, []).append(node_id_str)
+            current = team_labels.get(team_key)
+            if current is None or _team_label_rank(label) > _team_label_rank(current):
+                team_labels[team_key] = label
+
+    for team_key, label in team_labels.items():
+        for team_id in team_nodes.get(team_key, []):
+            for node_id in nx.single_source_shortest_path_length(G, team_id, cutoff=cutoff):
+                node_teams.setdefault(str(node_id), set()).add(label)
+
+    team_names_by_node = {
+        node_id: sorted(labels, key=str.lower)
+        for node_id, labels in node_teams.items()
+        if labels
+    }
+    team_options = sorted(set(team_labels.values()), key=str.lower)
+    return team_names_by_node, team_options
+
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
   #graph { flex: 1; }
-  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
+  #sidebar { width: 300px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
   #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
   #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
   #search:focus { border-color: #4E79A7; }
   #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
   .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .search-item:hover { background: #2a2a4e; }
-  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
-  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #panel-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid #2a2a4e; }
+  .panel-tab { appearance: none; background: #151526; border: 0; border-right: 1px solid #2a2a4e; color: #7d84b3; padding: 11px 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+  .panel-tab:last-child { border-right: 0; }
+  .panel-tab:hover { background: #20203a; color: #d5daf5; }
+  .panel-tab.active { background: #252547; color: #ffffff; }
+  #panel-stack { flex: 1; min-height: 0; position: relative; }
+  .sidebar-panel { display: none; height: 100%; overflow-y: auto; overflow-x: hidden; }
+  .sidebar-panel.active { display: block; }
+  #info-panel, #filters-wrap, #legend-wrap { padding: 14px; }
+  #info-panel h3, #filters-wrap h3, #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
   #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #e0e0e0; }
@@ -77,14 +307,32 @@ def _html_styles() -> str:
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
   .neighbor-link:hover { background: #2a2a4e; }
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
-  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
-  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .filter-section { margin-bottom: 16px; }
+  .filter-label { display: block; margin-bottom: 6px; color: #888; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  .filter-select { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 8px 10px; border-radius: 6px; font-size: 12px; outline: none; }
+  .filter-select:focus { border-color: #4E79A7; }
+  .filter-hint { font-size: 11px; color: #787d9c; line-height: 1.5; }
+  .filter-hint b { color: #d5daf5; }
+  .range-labels { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 10px; color: #8f95ba; }
+  .range-wrap { position: relative; height: 24px; }
+  .time-range { position: absolute; left: 0; top: 8px; width: 100%; height: 8px; margin: 0; appearance: none; background: transparent; pointer-events: none; }
+  .time-range::-webkit-slider-runnable-track { height: 4px; background: #2a2a4e; border-radius: 999px; }
+  .time-range::-moz-range-track { height: 4px; background: #2a2a4e; border-radius: 999px; }
+  .time-range::-webkit-slider-thumb { appearance: none; pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #d5daf5; border: 2px solid #252547; margin-top: -4px; cursor: pointer; }
+  .time-range::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #d5daf5; border: 2px solid #252547; cursor: pointer; }
+  .time-range:disabled { opacity: 0.4; }
+  .range-summary { margin-top: 8px; }
+  #reset-filters { width: 100%; padding: 8px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  #reset-filters:hover { background: #2a2a4e; }
   .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
   .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
   .legend-item.dimmed { opacity: 0.35; }
   .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
   .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .legend-count { color: #666; font-size: 11px; }
+  .legend-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .legend-btn { flex: 1; padding: 7px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+  .legend-btn:hover { background: #2a2a4e; }
   #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
 </style>"""
 
@@ -141,11 +389,19 @@ network.on('afterDrawing', drawHyperedges);
 </script>"""
 
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
+def _html_script(
+    nodes_json: str,
+    edges_json: str,
+    legend_json: str,
+    teams_json: str,
+    timeline_json: str,
+) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
+const TEAM_OPTIONS = {teams_json};
+const TIME_POINTS = {timeline_json};
 
 // Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
@@ -153,6 +409,12 @@ const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   font: n.font, title: n.title,
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+  _team_names: n.team_names || [],
+  _community_color: n.community_color,
+  _type_color: n.type_color,
+  _timestamp_ms: n.timestamp_ms,
+  _timestamp_label: n.timestamp_label,
+  _timestamp_source: n.timestamp_source,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -195,10 +457,80 @@ network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
 }});
 
+const filterState = {{
+  team: '',
+  colorMode: 'type',
+  timeStart: 0,
+  timeEnd: Math.max(TIME_POINTS.length - 1, 0),
+}};
+
+const hiddenCommunities = new Set();
+
+function colorForNode(n) {{
+  const hex = filterState.colorMode === 'community' ? n._community_color : n._type_color;
+  return {{
+    background: hex,
+    border: hex,
+    highlight: {{ background: '#ffffff', border: hex }},
+  }};
+}}
+
+function currentTimeBounds() {{
+  if (!TIME_POINTS.length) return null;
+  const startIndex = Math.min(filterState.timeStart, filterState.timeEnd);
+  const endIndex = Math.max(filterState.timeStart, filterState.timeEnd);
+  return {{
+    minMs: TIME_POINTS[startIndex].ms,
+    maxMs: TIME_POINTS[endIndex].ms,
+    minLabel: TIME_POINTS[startIndex].label,
+    maxLabel: TIME_POINTS[endIndex].label,
+  }};
+}}
+
+function timeFilterActive() {{
+  return TIME_POINTS.length > 1 && (
+    filterState.timeStart > 0 || filterState.timeEnd < TIME_POINTS.length - 1
+  );
+}}
+
+function nodeInTimeRange(n) {{
+  if (!TIME_POINTS.length || !timeFilterActive()) return true;
+  if (n._timestamp_ms === null || n._timestamp_ms === undefined) return false;
+  const bounds = currentTimeBounds();
+  return n._timestamp_ms >= bounds.minMs && n._timestamp_ms <= bounds.maxMs;
+}}
+
+function nodeVisible(n) {{
+  if (hiddenCommunities.has(n._community)) return false;
+  if (!nodeInTimeRange(n)) return false;
+  if (!filterState.team) return true;
+  return (n._team_names || []).includes(filterState.team);
+}}
+
+function applyFilters() {{
+  const nodeUpdates = nodesDS.getIds().map(id => {{
+    const n = nodesDS.get(id);
+    return {{ id, hidden: !nodeVisible(n), color: colorForNode(n) }};
+  }});
+  nodesDS.update(nodeUpdates);
+
+  const hiddenIds = new Set(
+    nodesDS.get({{ filter: n => n.hidden }}).map(n => n.id)
+  );
+  const edgeUpdates = edgesDS.getIds().map(id => {{
+    const e = edgesDS.get(id);
+    return {{ id, hidden: hiddenIds.has(e.from) || hiddenIds.has(e.to) }};
+  }});
+  edgesDS.update(edgeUpdates);
+}}
+
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
   const neighborIds = network.getConnectedNodes(nodeId);
+  const dateValue = n._timestamp_label
+    ? n._timestamp_label + (n._timestamp_source ? ' (' + n._timestamp_source + ')' : '')
+    : '-';
   const neighborItems = neighborIds.map(nid => {{
     const nb = nodesDS.get(nid);
     const color = nb ? nb.color.background : '#555';
@@ -208,6 +540,7 @@ function showInfo(nodeId) {{
     <div class="field"><b>${{n.label}}</b></div>
     <div class="field">Type: ${{n._file_type || 'unknown'}}</div>
     <div class="field">Community: ${{n._community_name}}</div>
+    <div class="field">Date: ${{dateValue}}</div>
     <div class="field">Source: ${{n._source_file || '-'}}</div>
     <div class="field">Degree: ${{n._degree}}</div>
     ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
@@ -255,29 +588,142 @@ document.addEventListener('click', e => {{
     searchResults.style.display = 'none';
 }});
 
-const hiddenCommunities = new Set();
+document.querySelectorAll('.panel-tab').forEach(tab => {{
+  tab.addEventListener('click', () => {{
+    document.querySelectorAll('.panel-tab').forEach(item => item.classList.remove('active'));
+    document.querySelectorAll('.sidebar-panel').forEach(panel => panel.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+  }});
+}});
+
+const teamSelect = document.getElementById('filter-team');
+TEAM_OPTIONS.forEach(team => {{
+  const option = document.createElement('option');
+  option.value = team;
+  option.textContent = team;
+  teamSelect.appendChild(option);
+}});
+teamSelect.addEventListener('change', () => {{
+  filterState.team = teamSelect.value;
+  applyFilters();
+}});
+const colorModeSelect = document.getElementById('filter-color-mode');
+colorModeSelect.addEventListener('change', () => {{
+  filterState.colorMode = colorModeSelect.value;
+  applyFilters();
+}});
+const timeStartInput = document.getElementById('filter-time-start');
+const timeEndInput = document.getElementById('filter-time-end');
+const timeStartLabel = document.getElementById('filter-time-start-label');
+const timeEndLabel = document.getElementById('filter-time-end-label');
+const timeHint = document.getElementById('filter-time-hint');
+
+function syncTimeInputs(changedInput) {{
+  if (!TIME_POINTS.length) {{
+    timeStartInput.disabled = true;
+    timeEndInput.disabled = true;
+    timeStartLabel.textContent = 'N/A';
+    timeEndLabel.textContent = 'N/A';
+    timeHint.textContent = 'No temporal metadata was detected in this graph.';
+    return;
+  }}
+
+  let start = Number(timeStartInput.value || 0);
+  let end = Number(timeEndInput.value || 0);
+  if (changedInput === 'start' && start > end) end = start;
+  if (changedInput === 'end' && end < start) start = end;
+  if (start > end) [start, end] = [end, start];
+
+  timeStartInput.value = String(start);
+  timeEndInput.value = String(end);
+  filterState.timeStart = start;
+  filterState.timeEnd = end;
+
+  const bounds = currentTimeBounds();
+  if (!bounds) return;
+  timeStartLabel.textContent = bounds.minLabel;
+  timeEndLabel.textContent = bounds.maxLabel;
+  if (timeFilterActive()) {{
+    timeHint.innerHTML = `Showing nodes dated <b>${{bounds.minLabel}}</b> to <b>${{bounds.maxLabel}}</b>. Narrowing the interval hides undated nodes.`;
+  }} else {{
+    timeHint.innerHTML = `Uses source document dates. Full range is <b>${{TIME_POINTS[0].label}}</b> to <b>${{TIME_POINTS[TIME_POINTS.length - 1].label}}</b>.`;
+  }}
+  applyFilters();
+}}
+
+if (TIME_POINTS.length) {{
+  const maxIndex = TIME_POINTS.length - 1;
+  timeStartInput.min = '0';
+  timeStartInput.max = String(maxIndex);
+  timeStartInput.step = '1';
+  timeStartInput.value = '0';
+  timeEndInput.min = '0';
+  timeEndInput.max = String(maxIndex);
+  timeEndInput.step = '1';
+  timeEndInput.value = String(maxIndex);
+  timeStartInput.addEventListener('input', () => syncTimeInputs('start'));
+  timeEndInput.addEventListener('input', () => syncTimeInputs('end'));
+}} else {{
+  timeStartInput.disabled = true;
+  timeEndInput.disabled = true;
+}}
+
+document.getElementById('reset-filters').addEventListener('click', () => {{
+  filterState.team = '';
+  filterState.colorMode = 'type';
+  teamSelect.value = '';
+  colorModeSelect.value = 'type';
+  if (TIME_POINTS.length) {{
+    timeStartInput.value = '0';
+    timeEndInput.value = String(TIME_POINTS.length - 1);
+    syncTimeInputs();
+  }} else {{
+    applyFilters();
+  }}
+}});
+
 const legendEl = document.getElementById('legend');
+const legendItems = new Map();
+
+function setCommunityHidden(cid, hidden) {{
+  if (hidden) {{
+    hiddenCommunities.add(cid);
+  }} else {{
+    hiddenCommunities.delete(cid);
+  }}
+  const item = legendItems.get(cid);
+  if (item) {{
+    item.classList.toggle('dimmed', hidden);
+  }}
+}}
+
 LEGEND.forEach(c => {{
   const item = document.createElement('div');
   item.className = 'legend-item';
+  legendItems.set(c.cid, item);
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
     <span class="legend-label">${{c.label}}</span>
     <span class="legend-count">${{c.count}}</span>`;
   item.onclick = () => {{
-    if (hiddenCommunities.has(c.cid)) {{
-      hiddenCommunities.delete(c.cid);
-      item.classList.remove('dimmed');
-    }} else {{
-      hiddenCommunities.add(c.cid);
-      item.classList.add('dimmed');
-    }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: hiddenCommunities.has(c.cid) }}));
-    nodesDS.update(updates);
+    setCommunityHidden(c.cid, !hiddenCommunities.has(c.cid));
+    applyFilters();
   }};
   legendEl.appendChild(item);
 }});
+
+document.getElementById('legend-hide-all').addEventListener('click', () => {{
+  LEGEND.forEach(c => setCommunityHidden(c.cid, true));
+  applyFilters();
+}});
+
+document.getElementById('legend-view-all').addEventListener('click', () => {{
+  LEGEND.forEach(c => setCommunityHidden(c.cid, false));
+  applyFilters();
+}});
+
+syncTimeInputs();
+if (!TIME_POINTS.length) applyFilters();
 </script>"""
 
 
@@ -363,16 +809,21 @@ def to_html(
     node_community = _node_community_map(communities)
     degree = dict(G.degree())
     max_deg = max(degree.values()) if degree else 1
+    team_names_by_node, team_filter_options = _team_filter_data(G)
+    node_temporal, timeline_points = _temporal_filter_data(G)
 
     # Build nodes list for vis.js
     vis_nodes = []
     for node_id, data in G.nodes(data=True):
         cid = node_community.get(node_id, 0)
-        color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
+        community_color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
+        type_color = _generic_node_color(str(node_id), data, community_color)
+        color = type_color
         label = sanitize_label(data.get("label", node_id))
         deg = degree.get(node_id, 1)
         size = 10 + 30 * (deg / max_deg)
         font_size = 12 if deg >= max_deg * 0.15 else 0
+        temporal = node_temporal.get(str(node_id), {})
         vis_nodes.append({
             "id": node_id,
             "label": label,
@@ -385,6 +836,12 @@ def to_html(
             "source_file": sanitize_label(data.get("source_file", "")),
             "file_type": data.get("file_type", ""),
             "degree": deg,
+            "team_names": team_names_by_node.get(str(node_id), []),
+            "community_color": community_color,
+            "type_color": type_color,
+            "timestamp_ms": temporal.get("timestamp_ms"),
+            "timestamp_label": temporal.get("timestamp_label", ""),
+            "timestamp_source": temporal.get("timestamp_source", ""),
         })
 
     # Build edges list
@@ -414,6 +871,8 @@ def to_html(
     nodes_json = json.dumps(vis_nodes)
     edges_json = json.dumps(vis_edges)
     legend_json = json.dumps(legend_data)
+    teams_json = json.dumps(team_filter_options)
+    timeline_json = json.dumps(timeline_points)
     hyperedges_json = json.dumps(getattr(G, "graph", {}).get("hyperedges", []))
     title = sanitize_label(str(output_path))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
@@ -433,17 +892,59 @@ def to_html(
     <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
     <div id="search-results"></div>
   </div>
-  <div id="info-panel">
-    <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  <div id="panel-tabs">
+    <button class="panel-tab active" data-panel="info-panel" type="button">Info</button>
+    <button class="panel-tab" data-panel="filters-wrap" type="button">Filters</button>
+    <button class="panel-tab" data-panel="legend-wrap" type="button">Communities</button>
   </div>
-  <div id="legend-wrap">
-    <h3>Communities</h3>
-    <div id="legend"></div>
+  <div id="panel-stack">
+    <div id="info-panel" class="sidebar-panel active">
+      <h3>Node Info</h3>
+      <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+    </div>
+    <div id="filters-wrap" class="sidebar-panel">
+      <h3>Filters</h3>
+      <div class="filter-section">
+        <label class="filter-label" for="filter-color-mode">Coloring</label>
+        <select id="filter-color-mode" class="filter-select">
+          <option value="type">Node Type</option>
+          <option value="community">Community</option>
+        </select>
+        <p class="filter-hint"><b>Node Type</b><br>Colors by what a node represents: teams are green, incidents red, alerts yellow, concepts blue, and rationale/meta nodes muted.<br><br><b>Community</b><br>Colors every node by its graph cluster from the Communities panel.</p>
+      </div>
+      <div class="filter-section">
+        <label class="filter-label" for="filter-team">Team</label>
+        <select id="filter-team" class="filter-select">
+          <option value="">All Teams</option>
+        </select>
+        <p class="filter-hint">Team filters the graph to the selected team and nearby connected nodes. Leave it on <b>All Teams</b> to view the full graph.</p>
+      </div>
+      <div class="filter-section">
+        <label class="filter-label" for="filter-time-start">Time Range</label>
+        <div class="range-labels">
+          <span id="filter-time-start-label">N/A</span>
+          <span id="filter-time-end-label">N/A</span>
+        </div>
+        <div class="range-wrap">
+          <input id="filter-time-start" class="time-range" type="range" min="0" max="0" value="0">
+          <input id="filter-time-end" class="time-range" type="range" min="0" max="0" value="0">
+        </div>
+        <p id="filter-time-hint" class="filter-hint range-summary">Uses source document dates to show only nodes inside the selected interval. Narrowing the interval hides undated nodes.</p>
+      </div>
+      <button id="reset-filters" type="button">Reset Filters</button>
+    </div>
+    <div id="legend-wrap" class="sidebar-panel">
+      <h3>Communities</h3>
+      <div class="legend-actions">
+        <button id="legend-hide-all" class="legend-btn" type="button">Hide All</button>
+        <button id="legend-view-all" class="legend-btn" type="button">View All</button>
+      </div>
+      <div id="legend"></div>
+    </div>
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json)}
+{_html_script(nodes_json, edges_json, legend_json, teams_json, timeline_json)}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
@@ -750,7 +1251,7 @@ function nodeVisible(n) {{
   if (n._node_type === 'service') {{
     if (filterState.team) {{
       // Show service if connected to selected team
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const cn = nodesDS.get(cid);
         return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
@@ -771,7 +1272,7 @@ function nodeVisible(n) {{
     }}
     // Team filter: show incident if connected to selected team
     if (filterState.team) {{
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const cn = nodesDS.get(cid);
         return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
@@ -789,11 +1290,11 @@ function nodeVisible(n) {{
     }}
     // Team filter: show alert if its incident is connected to selected team
     if (filterState.team && n._has_incident) {{
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const inc = nodesDS.get(cid);
         if (!inc || inc._node_type !== 'incident') return false;
-        const incConns = network.getConnectedNodes(cid);
+        const incConns = connectedIds(cid);
         return incConns.some(tid => {{
           const tn = nodesDS.get(tid);
           return tn && tn._node_type === 'team' && tn._team_name === filterState.team;
@@ -807,11 +1308,30 @@ function nodeVisible(n) {{
 }}
 
 function applyFilters() {{
-  const updates = nodesDS.getIds().map(id => {{
+  const nodeUpdates = nodesDS.getIds().map(id => {{
     const n = nodesDS.get(id);
     return {{ id, hidden: !nodeVisible(n) }};
   }});
-  nodesDS.update(updates);
+  nodesDS.update(nodeUpdates);
+
+  // Explicitly sync edge visibility — vis-network doesn't reliably auto-hide/show
+  // edges when connected nodes change hidden state via DataSet.update()
+  const hiddenSet = new Set(
+    nodesDS.get({{ filter: n => n.hidden }}).map(n => n.id)
+  );
+  const edgeUpdates = edgesDS.getIds().map(id => {{
+    const e = edgesDS.get(id);
+    return {{ id, hidden: hiddenSet.has(e.from) || hiddenSet.has(e.to) }};
+  }});
+  edgesDS.update(edgeUpdates);
+}}
+
+// ── Edge-based neighbour lookup (works even when nodes are hidden) ────────────
+// network.getConnectedNodes() returns [] for hidden nodes; querying edgesDS
+// directly is reliable regardless of current visibility state.
+function connectedIds(nodeId) {{
+  return edgesDS.get().filter(e => e.from === nodeId || e.to === nodeId)
+                      .map(e => e.from === nodeId ? e.to : e.from);
 }}
 
 // ── Populate team dropdown ────────────────────────────────────────────────────
