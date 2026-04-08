@@ -56,20 +56,88 @@ def _rootly_node_color(data: dict) -> tuple[str, bool]:
     return _ROOTLY_NODE_COLORS.get(node_type, "#6b7280"), False
 
 
+def _is_team_node(node_id: str, data: dict) -> bool:
+    source_file = str(data.get("source_file", "")).replace("\\", "/").lower()
+    label = str(data.get("label", ""))
+    return (
+        node_id.startswith("team_")
+        or "/teams/" in source_file
+        or label.startswith("Team ")
+        or label.startswith("Team:")
+    )
+
+
+def _team_key(node_id: str, data: dict) -> str:
+    candidates = [node_id, str(data.get("source_file", ""))]
+    pattern = r"team[_-]([0-9a-fA-F]{8}(?:[_-][0-9a-fA-F]{4}){3}[_-][0-9a-fA-F]{12})"
+    for candidate in candidates:
+        match = re.search(pattern, candidate)
+        if match:
+            return match.group(1).replace("_", "-").lower()
+    return node_id
+
+
+def _team_label_rank(label: str) -> tuple[int, int]:
+    generic = 0 if label.startswith("Team ") or label.startswith("Team:") else 1
+    return (generic, len(label))
+
+
+def _team_filter_data(
+    G: nx.Graph,
+    cutoff: int = 3,
+) -> tuple[dict[str, list[str]], list[str]]:
+    team_nodes: dict[str, list[str]] = {}
+    team_labels: dict[str, str] = {}
+    node_teams: dict[str, set[str]] = {str(node_id): set() for node_id in G.nodes()}
+
+    for node_id, data in G.nodes(data=True):
+        node_id_str = str(node_id)
+        if not _is_team_node(node_id_str, data):
+            continue
+        team_key = _team_key(node_id_str, data)
+        label = re.sub(r"^Team:\s*", "", str(data.get("label", node_id))).strip()
+        if label:
+            team_nodes.setdefault(team_key, []).append(node_id_str)
+            current = team_labels.get(team_key)
+            if current is None or _team_label_rank(label) > _team_label_rank(current):
+                team_labels[team_key] = label
+
+    for team_key, label in team_labels.items():
+        for team_id in team_nodes.get(team_key, []):
+            for node_id in nx.single_source_shortest_path_length(G, team_id, cutoff=cutoff):
+                node_teams.setdefault(str(node_id), set()).add(label)
+
+    team_names_by_node = {
+        node_id: sorted(labels, key=str.lower)
+        for node_id, labels in node_teams.items()
+        if labels
+    }
+    team_options = sorted(set(team_labels.values()), key=str.lower)
+    return team_names_by_node, team_options
+
+
 def _html_styles() -> str:
     return """<style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
   #graph { flex: 1; }
-  #sidebar { width: 280px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
+  #sidebar { width: 300px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow: hidden; }
   #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
   #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
   #search:focus { border-color: #4E79A7; }
   #search-results { max-height: 140px; overflow-y: auto; padding: 4px 12px; border-bottom: 1px solid #2a2a4e; display: none; }
   .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .search-item:hover { background: #2a2a4e; }
-  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 140px; }
-  #info-panel h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  #panel-tabs { display: grid; grid-template-columns: repeat(3, 1fr); border-bottom: 1px solid #2a2a4e; }
+  .panel-tab { appearance: none; background: #151526; border: 0; border-right: 1px solid #2a2a4e; color: #7d84b3; padding: 11px 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; }
+  .panel-tab:last-child { border-right: 0; }
+  .panel-tab:hover { background: #20203a; color: #d5daf5; }
+  .panel-tab.active { background: #252547; color: #ffffff; }
+  #panel-stack { flex: 1; min-height: 0; position: relative; }
+  .sidebar-panel { display: none; height: 100%; overflow-y: auto; overflow-x: hidden; }
+  .sidebar-panel.active { display: block; }
+  #info-panel, #filters-wrap, #legend-wrap { padding: 14px; }
+  #info-panel h3, #filters-wrap h3, #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
   #info-content { font-size: 13px; color: #ccc; line-height: 1.6; }
   #info-content .field { margin-bottom: 5px; }
   #info-content .field b { color: #e0e0e0; }
@@ -77,8 +145,13 @@ def _html_styles() -> str:
   .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
   .neighbor-link:hover { background: #2a2a4e; }
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
-  #legend-wrap { flex: 1; overflow-y: auto; padding: 12px; }
-  #legend-wrap h3 { font-size: 13px; color: #aaa; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .filter-section { margin-bottom: 16px; }
+  .filter-label { display: block; margin-bottom: 6px; color: #888; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+  #filter-team { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 8px 10px; border-radius: 6px; font-size: 12px; outline: none; }
+  #filter-team:focus { border-color: #4E79A7; }
+  .filter-hint { font-size: 11px; color: #787d9c; line-height: 1.5; }
+  #reset-filters { width: 100%; padding: 8px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 12px; cursor: pointer; }
+  #reset-filters:hover { background: #2a2a4e; }
   .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
   .legend-item:hover { background: #2a2a4e; padding-left: 4px; }
   .legend-item.dimmed { opacity: 0.35; }
@@ -141,11 +214,12 @@ network.on('afterDrawing', drawHyperedges);
 </script>"""
 
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str) -> str:
+def _html_script(nodes_json: str, edges_json: str, legend_json: str, teams_json: str) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
+const TEAM_OPTIONS = {teams_json};
 
 // Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
@@ -153,6 +227,7 @@ const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   font: n.font, title: n.title,
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
+  _team_names: n.team_names || [],
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -194,6 +269,35 @@ const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }},
 network.once('stabilizationIterationsDone', () => {{
   network.setOptions({{ physics: {{ enabled: false }} }});
 }});
+
+const filterState = {{
+  team: '',
+}};
+
+const hiddenCommunities = new Set();
+
+function nodeVisible(n) {{
+  if (hiddenCommunities.has(n._community)) return false;
+  if (!filterState.team) return true;
+  return (n._team_names || []).includes(filterState.team);
+}}
+
+function applyFilters() {{
+  const nodeUpdates = nodesDS.getIds().map(id => {{
+    const n = nodesDS.get(id);
+    return {{ id, hidden: !nodeVisible(n) }};
+  }});
+  nodesDS.update(nodeUpdates);
+
+  const hiddenIds = new Set(
+    nodesDS.get({{ filter: n => n.hidden }}).map(n => n.id)
+  );
+  const edgeUpdates = edgesDS.getIds().map(id => {{
+    const e = edgesDS.get(id);
+    return {{ id, hidden: hiddenIds.has(e.from) || hiddenIds.has(e.to) }};
+  }});
+  edgesDS.update(edgeUpdates);
+}}
 
 function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
@@ -255,7 +359,32 @@ document.addEventListener('click', e => {{
     searchResults.style.display = 'none';
 }});
 
-const hiddenCommunities = new Set();
+document.querySelectorAll('.panel-tab').forEach(tab => {{
+  tab.addEventListener('click', () => {{
+    document.querySelectorAll('.panel-tab').forEach(item => item.classList.remove('active'));
+    document.querySelectorAll('.sidebar-panel').forEach(panel => panel.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(tab.dataset.panel).classList.add('active');
+  }});
+}});
+
+const teamSelect = document.getElementById('filter-team');
+TEAM_OPTIONS.forEach(team => {{
+  const option = document.createElement('option');
+  option.value = team;
+  option.textContent = team;
+  teamSelect.appendChild(option);
+}});
+teamSelect.addEventListener('change', () => {{
+  filterState.team = teamSelect.value;
+  applyFilters();
+}});
+document.getElementById('reset-filters').addEventListener('click', () => {{
+  filterState.team = '';
+  teamSelect.value = '';
+  applyFilters();
+}});
+
 const legendEl = document.getElementById('legend');
 LEGEND.forEach(c => {{
   const item = document.createElement('div');
@@ -271,13 +400,12 @@ LEGEND.forEach(c => {{
       hiddenCommunities.add(c.cid);
       item.classList.add('dimmed');
     }}
-    const updates = RAW_NODES
-      .filter(n => n.community === c.cid)
-      .map(n => ({{ id: n.id, hidden: hiddenCommunities.has(c.cid) }}));
-    nodesDS.update(updates);
+    applyFilters();
   }};
   legendEl.appendChild(item);
 }});
+
+applyFilters();
 </script>"""
 
 
@@ -363,6 +491,7 @@ def to_html(
     node_community = _node_community_map(communities)
     degree = dict(G.degree())
     max_deg = max(degree.values()) if degree else 1
+    team_names_by_node, team_filter_options = _team_filter_data(G)
 
     # Build nodes list for vis.js
     vis_nodes = []
@@ -385,6 +514,7 @@ def to_html(
             "source_file": sanitize_label(data.get("source_file", "")),
             "file_type": data.get("file_type", ""),
             "degree": deg,
+            "team_names": team_names_by_node.get(str(node_id), []),
         })
 
     # Build edges list
@@ -414,6 +544,7 @@ def to_html(
     nodes_json = json.dumps(vis_nodes)
     edges_json = json.dumps(vis_edges)
     legend_json = json.dumps(legend_data)
+    teams_json = json.dumps(team_filter_options)
     hyperedges_json = json.dumps(getattr(G, "graph", {}).get("hyperedges", []))
     title = sanitize_label(str(output_path))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
@@ -433,17 +564,37 @@ def to_html(
     <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
     <div id="search-results"></div>
   </div>
-  <div id="info-panel">
-    <h3>Node Info</h3>
-    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  <div id="panel-tabs">
+    <button class="panel-tab active" data-panel="info-panel" type="button">Info</button>
+    <button class="panel-tab" data-panel="filters-wrap" type="button">Filters</button>
+    <button class="panel-tab" data-panel="legend-wrap" type="button">Communities</button>
   </div>
-  <div id="legend-wrap">
-    <h3>Communities</h3>
-    <div id="legend"></div>
+  <div id="panel-stack">
+    <div id="info-panel" class="sidebar-panel active">
+      <h3>Node Info</h3>
+      <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+    </div>
+    <div id="filters-wrap" class="sidebar-panel">
+      <h3>Filters</h3>
+      <div class="filter-section">
+        <label class="filter-label" for="filter-team">Team</label>
+        <select id="filter-team">
+          <option value="">All Teams</option>
+        </select>
+      </div>
+      <div class="filter-section">
+        <p class="filter-hint">Show the selected team and nearby connected nodes. Leave the dropdown on <b>All Teams</b> to view the full graph.</p>
+      </div>
+      <button id="reset-filters" type="button">Reset Filters</button>
+    </div>
+    <div id="legend-wrap" class="sidebar-panel">
+      <h3>Communities</h3>
+      <div id="legend"></div>
+    </div>
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json)}
+{_html_script(nodes_json, edges_json, legend_json, teams_json)}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
