@@ -4,6 +4,7 @@ import json
 import math
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 import networkx as nx
 from networkx.readwrite import json_graph
@@ -98,6 +99,151 @@ def _generic_node_color(node_id: str, data: dict, fallback: str) -> str:
     return "#64748b"
 
 
+_TEMPORAL_TEXT_PATTERNS = (
+    ("Started At", re.compile(r"(?im)^\s*-\s+\*\*Started At:\*\*\s*(.+?)\s*$")),
+    ("Occurred At", re.compile(r"(?im)^\s*-\s+\*\*Occurred At:\*\*\s*(.+?)\s*$")),
+    ("Created At", re.compile(r"(?im)^\s*-\s+\*\*Created At:\*\*\s*(.+?)\s*$")),
+    ("Captured At", re.compile(r"(?im)^\s*-\s+\*\*Captured At:\*\*\s*(.+?)\s*$")),
+    ("Date", re.compile(r"(?im)^\s*-\s+\*\*Date:\*\*\s*(.+?)\s*$")),
+)
+_TEMPORAL_JSON_KEYS = (
+    "started_at",
+    "occurred_at",
+    "created_at",
+    "captured_at",
+    "acknowledged_at",
+    "ended_at",
+    "resolved_at",
+    "updated_at",
+)
+
+
+def _parse_timestamp(raw: object) -> tuple[int, str] | None:
+    value = str(raw or "").strip().strip("`")
+    if not value or value.lower() in {"n/a", "na", "none", "null", "unknown", "-"}:
+        return None
+    for parser in (
+        lambda text: datetime.fromisoformat(text.replace("Z", "+00:00")),
+        lambda text: datetime.strptime(text, "%Y-%m-%d"),
+        lambda text: datetime.strptime(text, "%a %b %d %Y %H:%M:%S %Z"),
+    ):
+        try:
+            dt = parser(value)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return int(dt.timestamp() * 1000), dt.strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
+
+
+def _find_json_value(data: object, key: str) -> object | None:
+    if isinstance(data, dict):
+        if key in data:
+            return data[key]
+        for value in data.values():
+            found = _find_json_value(value, key)
+            if found is not None:
+                return found
+    if isinstance(data, list):
+        for item in data:
+            found = _find_json_value(item, key)
+            if found is not None:
+                return found
+    return None
+
+
+def _temporal_metadata_from_text(text: str) -> dict[str, object]:
+    for label, pattern in _TEMPORAL_TEXT_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        parsed = _parse_timestamp(match.group(1))
+        if parsed:
+            timestamp_ms, timestamp_label = parsed
+            return {
+                "timestamp_ms": timestamp_ms,
+                "timestamp_label": timestamp_label,
+                "timestamp_source": label,
+            }
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _temporal_metadata_from_json(path: Path) -> dict[str, object]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    for key in _TEMPORAL_JSON_KEYS:
+        parsed = _parse_timestamp(_find_json_value(data, key))
+        if parsed:
+            timestamp_ms, timestamp_label = parsed
+            return {
+                "timestamp_ms": timestamp_ms,
+                "timestamp_label": timestamp_label,
+                "timestamp_source": key.replace("_", " ").title(),
+            }
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _source_temporal_metadata(source_file: str, captured_at: object) -> dict[str, object]:
+    parsed = _parse_timestamp(captured_at)
+    if parsed:
+        timestamp_ms, timestamp_label = parsed
+        return {
+            "timestamp_ms": timestamp_ms,
+            "timestamp_label": timestamp_label,
+            "timestamp_source": "Captured At",
+        }
+
+    path = Path(source_file)
+    if not source_file or not path.exists():
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    if path.suffix.lower() == ".json":
+        return _temporal_metadata_from_json(path)
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+    metadata = _temporal_metadata_from_text(text)
+    if metadata["timestamp_ms"] is not None:
+        return metadata
+
+    sibling_json = path.with_suffix(".json")
+    if sibling_json.exists():
+        metadata = _temporal_metadata_from_json(sibling_json)
+        if metadata["timestamp_ms"] is not None:
+            return metadata
+
+    return {"timestamp_ms": None, "timestamp_label": "", "timestamp_source": ""}
+
+
+def _temporal_filter_data(G: nx.Graph) -> tuple[dict[str, dict[str, object]], list[dict[str, object]]]:
+    cache: dict[tuple[str, str], dict[str, object]] = {}
+    node_temporal: dict[str, dict[str, object]] = {}
+    timeline_points: dict[int, str] = {}
+
+    for node_id, data in G.nodes(data=True):
+        source_file = str(data.get("source_file", "")).strip()
+        captured_at = str(data.get("captured_at", "")).strip()
+        cache_key = (source_file, captured_at)
+        if cache_key not in cache:
+            cache[cache_key] = _source_temporal_metadata(source_file, captured_at)
+        metadata = cache[cache_key]
+        node_temporal[str(node_id)] = dict(metadata)
+        timestamp_ms = metadata.get("timestamp_ms")
+        timestamp_label = str(metadata.get("timestamp_label", "")).strip()
+        if isinstance(timestamp_ms, int) and timestamp_label:
+            timeline_points[timestamp_ms] = timestamp_label
+
+    timeline = [{"ms": ms, "label": timeline_points[ms]} for ms in sorted(timeline_points)]
+    return node_temporal, timeline
+
+
 def _team_filter_data(
     G: nx.Graph,
     cutoff: int = 3,
@@ -166,6 +312,16 @@ def _html_styles() -> str:
   .filter-select { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 8px 10px; border-radius: 6px; font-size: 12px; outline: none; }
   .filter-select:focus { border-color: #4E79A7; }
   .filter-hint { font-size: 11px; color: #787d9c; line-height: 1.5; }
+  .filter-hint b { color: #d5daf5; }
+  .range-labels { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 8px; font-size: 10px; color: #8f95ba; }
+  .range-wrap { position: relative; height: 24px; }
+  .time-range { position: absolute; left: 0; top: 8px; width: 100%; height: 8px; margin: 0; appearance: none; background: transparent; pointer-events: none; }
+  .time-range::-webkit-slider-runnable-track { height: 4px; background: #2a2a4e; border-radius: 999px; }
+  .time-range::-moz-range-track { height: 4px; background: #2a2a4e; border-radius: 999px; }
+  .time-range::-webkit-slider-thumb { appearance: none; pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #d5daf5; border: 2px solid #252547; margin-top: -4px; cursor: pointer; }
+  .time-range::-moz-range-thumb { pointer-events: auto; width: 12px; height: 12px; border-radius: 50%; background: #d5daf5; border: 2px solid #252547; cursor: pointer; }
+  .time-range:disabled { opacity: 0.4; }
+  .range-summary { margin-top: 8px; }
   #reset-filters { width: 100%; padding: 8px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 12px; cursor: pointer; }
   #reset-filters:hover { background: #2a2a4e; }
   .legend-item { display: flex; align-items: center; gap: 8px; padding: 4px 0; cursor: pointer; border-radius: 4px; font-size: 12px; }
@@ -233,12 +389,19 @@ network.on('afterDrawing', drawHyperedges);
 </script>"""
 
 
-def _html_script(nodes_json: str, edges_json: str, legend_json: str, teams_json: str) -> str:
+def _html_script(
+    nodes_json: str,
+    edges_json: str,
+    legend_json: str,
+    teams_json: str,
+    timeline_json: str,
+) -> str:
     return f"""<script>
 const RAW_NODES = {nodes_json};
 const RAW_EDGES = {edges_json};
 const LEGEND = {legend_json};
 const TEAM_OPTIONS = {teams_json};
+const TIME_POINTS = {timeline_json};
 
 // Build vis datasets
 const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
@@ -249,6 +412,9 @@ const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   _team_names: n.team_names || [],
   _community_color: n.community_color,
   _type_color: n.type_color,
+  _timestamp_ms: n.timestamp_ms,
+  _timestamp_label: n.timestamp_label,
+  _timestamp_source: n.timestamp_source,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -294,6 +460,8 @@ network.once('stabilizationIterationsDone', () => {{
 const filterState = {{
   team: '',
   colorMode: 'type',
+  timeStart: 0,
+  timeEnd: Math.max(TIME_POINTS.length - 1, 0),
 }};
 
 const hiddenCommunities = new Set();
@@ -307,8 +475,34 @@ function colorForNode(n) {{
   }};
 }}
 
+function currentTimeBounds() {{
+  if (!TIME_POINTS.length) return null;
+  const startIndex = Math.min(filterState.timeStart, filterState.timeEnd);
+  const endIndex = Math.max(filterState.timeStart, filterState.timeEnd);
+  return {{
+    minMs: TIME_POINTS[startIndex].ms,
+    maxMs: TIME_POINTS[endIndex].ms,
+    minLabel: TIME_POINTS[startIndex].label,
+    maxLabel: TIME_POINTS[endIndex].label,
+  }};
+}}
+
+function timeFilterActive() {{
+  return TIME_POINTS.length > 1 && (
+    filterState.timeStart > 0 || filterState.timeEnd < TIME_POINTS.length - 1
+  );
+}}
+
+function nodeInTimeRange(n) {{
+  if (!TIME_POINTS.length || !timeFilterActive()) return true;
+  if (n._timestamp_ms === null || n._timestamp_ms === undefined) return false;
+  const bounds = currentTimeBounds();
+  return n._timestamp_ms >= bounds.minMs && n._timestamp_ms <= bounds.maxMs;
+}}
+
 function nodeVisible(n) {{
   if (hiddenCommunities.has(n._community)) return false;
+  if (!nodeInTimeRange(n)) return false;
   if (!filterState.team) return true;
   return (n._team_names || []).includes(filterState.team);
 }}
@@ -334,6 +528,9 @@ function showInfo(nodeId) {{
   const n = nodesDS.get(nodeId);
   if (!n) return;
   const neighborIds = network.getConnectedNodes(nodeId);
+  const dateValue = n._timestamp_label
+    ? n._timestamp_label + (n._timestamp_source ? ' (' + n._timestamp_source + ')' : '')
+    : '-';
   const neighborItems = neighborIds.map(nid => {{
     const nb = nodesDS.get(nid);
     const color = nb ? nb.color.background : '#555';
@@ -343,6 +540,7 @@ function showInfo(nodeId) {{
     <div class="field"><b>${{n.label}}</b></div>
     <div class="field">Type: ${{n._file_type || 'unknown'}}</div>
     <div class="field">Community: ${{n._community_name}}</div>
+    <div class="field">Date: ${{dateValue}}</div>
     <div class="field">Source: ${{n._source_file || '-'}}</div>
     <div class="field">Degree: ${{n._degree}}</div>
     ${{neighborIds.length ? `<div class="field" style="margin-top:8px;color:#aaa;font-size:11px">Neighbors (${{neighborIds.length}})</div><div id="neighbors-list">${{neighborItems}}</div>` : ''}}
@@ -415,12 +613,74 @@ colorModeSelect.addEventListener('change', () => {{
   filterState.colorMode = colorModeSelect.value;
   applyFilters();
 }});
+const timeStartInput = document.getElementById('filter-time-start');
+const timeEndInput = document.getElementById('filter-time-end');
+const timeStartLabel = document.getElementById('filter-time-start-label');
+const timeEndLabel = document.getElementById('filter-time-end-label');
+const timeHint = document.getElementById('filter-time-hint');
+
+function syncTimeInputs(changedInput) {{
+  if (!TIME_POINTS.length) {{
+    timeStartInput.disabled = true;
+    timeEndInput.disabled = true;
+    timeStartLabel.textContent = 'N/A';
+    timeEndLabel.textContent = 'N/A';
+    timeHint.textContent = 'No temporal metadata was detected in this graph.';
+    return;
+  }}
+
+  let start = Number(timeStartInput.value || 0);
+  let end = Number(timeEndInput.value || 0);
+  if (changedInput === 'start' && start > end) end = start;
+  if (changedInput === 'end' && end < start) start = end;
+  if (start > end) [start, end] = [end, start];
+
+  timeStartInput.value = String(start);
+  timeEndInput.value = String(end);
+  filterState.timeStart = start;
+  filterState.timeEnd = end;
+
+  const bounds = currentTimeBounds();
+  if (!bounds) return;
+  timeStartLabel.textContent = bounds.minLabel;
+  timeEndLabel.textContent = bounds.maxLabel;
+  if (timeFilterActive()) {{
+    timeHint.innerHTML = `Showing nodes dated <b>${{bounds.minLabel}}</b> to <b>${{bounds.maxLabel}}</b>. Narrowing the interval hides undated nodes.`;
+  }} else {{
+    timeHint.innerHTML = `Uses source document dates. Full range is <b>${{TIME_POINTS[0].label}}</b> to <b>${{TIME_POINTS[TIME_POINTS.length - 1].label}}</b>.`;
+  }}
+  applyFilters();
+}}
+
+if (TIME_POINTS.length) {{
+  const maxIndex = TIME_POINTS.length - 1;
+  timeStartInput.min = '0';
+  timeStartInput.max = String(maxIndex);
+  timeStartInput.step = '1';
+  timeStartInput.value = '0';
+  timeEndInput.min = '0';
+  timeEndInput.max = String(maxIndex);
+  timeEndInput.step = '1';
+  timeEndInput.value = String(maxIndex);
+  timeStartInput.addEventListener('input', () => syncTimeInputs('start'));
+  timeEndInput.addEventListener('input', () => syncTimeInputs('end'));
+}} else {{
+  timeStartInput.disabled = true;
+  timeEndInput.disabled = true;
+}}
+
 document.getElementById('reset-filters').addEventListener('click', () => {{
   filterState.team = '';
   filterState.colorMode = 'type';
   teamSelect.value = '';
   colorModeSelect.value = 'type';
-  applyFilters();
+  if (TIME_POINTS.length) {{
+    timeStartInput.value = '0';
+    timeEndInput.value = String(TIME_POINTS.length - 1);
+    syncTimeInputs();
+  }} else {{
+    applyFilters();
+  }}
 }});
 
 const legendEl = document.getElementById('legend');
@@ -462,7 +722,8 @@ document.getElementById('legend-view-all').addEventListener('click', () => {{
   applyFilters();
 }});
 
-applyFilters();
+syncTimeInputs();
+if (!TIME_POINTS.length) applyFilters();
 </script>"""
 
 
@@ -549,6 +810,7 @@ def to_html(
     degree = dict(G.degree())
     max_deg = max(degree.values()) if degree else 1
     team_names_by_node, team_filter_options = _team_filter_data(G)
+    node_temporal, timeline_points = _temporal_filter_data(G)
 
     # Build nodes list for vis.js
     vis_nodes = []
@@ -561,6 +823,7 @@ def to_html(
         deg = degree.get(node_id, 1)
         size = 10 + 30 * (deg / max_deg)
         font_size = 12 if deg >= max_deg * 0.15 else 0
+        temporal = node_temporal.get(str(node_id), {})
         vis_nodes.append({
             "id": node_id,
             "label": label,
@@ -576,6 +839,9 @@ def to_html(
             "team_names": team_names_by_node.get(str(node_id), []),
             "community_color": community_color,
             "type_color": type_color,
+            "timestamp_ms": temporal.get("timestamp_ms"),
+            "timestamp_label": temporal.get("timestamp_label", ""),
+            "timestamp_source": temporal.get("timestamp_source", ""),
         })
 
     # Build edges list
@@ -606,6 +872,7 @@ def to_html(
     edges_json = json.dumps(vis_edges)
     legend_json = json.dumps(legend_data)
     teams_json = json.dumps(team_filter_options)
+    timeline_json = json.dumps(timeline_points)
     hyperedges_json = json.dumps(getattr(G, "graph", {}).get("hyperedges", []))
     title = sanitize_label(str(output_path))
     stats = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges &middot; {len(communities)} communities"
@@ -652,6 +919,18 @@ def to_html(
         </select>
         <p class="filter-hint">Team filters the graph to the selected team and nearby connected nodes. Leave it on <b>All Teams</b> to view the full graph.</p>
       </div>
+      <div class="filter-section">
+        <label class="filter-label" for="filter-time-start">Time Range</label>
+        <div class="range-labels">
+          <span id="filter-time-start-label">N/A</span>
+          <span id="filter-time-end-label">N/A</span>
+        </div>
+        <div class="range-wrap">
+          <input id="filter-time-start" class="time-range" type="range" min="0" max="0" value="0">
+          <input id="filter-time-end" class="time-range" type="range" min="0" max="0" value="0">
+        </div>
+        <p id="filter-time-hint" class="filter-hint range-summary">Uses source document dates to show only nodes inside the selected interval. Narrowing the interval hides undated nodes.</p>
+      </div>
       <button id="reset-filters" type="button">Reset Filters</button>
     </div>
     <div id="legend-wrap" class="sidebar-panel">
@@ -665,7 +944,7 @@ def to_html(
   </div>
   <div id="stats">{stats}</div>
 </div>
-{_html_script(nodes_json, edges_json, legend_json, teams_json)}
+{_html_script(nodes_json, edges_json, legend_json, teams_json, timeline_json)}
 {_hyperedge_script(hyperedges_json)}
 </body>
 </html>"""
