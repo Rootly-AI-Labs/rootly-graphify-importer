@@ -17,6 +17,44 @@ COMMUNITY_COLORS = [
 
 MAX_NODES_FOR_VIZ = 5_000
 
+# Rootly-specific color scheme
+_ROOTLY_SEVERITY_COLORS = {
+    "sev1": "#ef4444",
+    "sev2": "#f97316",
+    "sev3": "#eab308",
+    "sev4": "#22c55e",
+}
+_ROOTLY_NODE_COLORS = {
+    "team":    "#3b82f6",
+    "service": "#8b5cf6",
+}
+_ROOTLY_EDGE_COLORS = {
+    "triggered":    "#f97316",
+    "affects":      "#ef4444",
+    "owns":         "#3b82f6",
+    "responded_by": "#22c55e",
+    "targets":      "#f97316",
+}
+
+
+def _rootly_node_color(data: dict) -> tuple[str, bool]:
+    """Return (hex_color, is_dashed_border) for a Rootly graph node."""
+    node_type = data.get("node_type", "")
+    if node_type == "incident":
+        sev = (data.get("severity") or "").lower().replace(" ", "").replace("-", "")
+        color = _ROOTLY_SEVERITY_COLORS.get(sev, "#6b7280")
+        is_open = not bool(data.get("resolved_at", "").strip())
+        return color, is_open
+    if node_type == "alert":
+        has_inc = data.get("has_incident", False)
+        ended   = bool(data.get("ended_at", "").strip())
+        if not has_inc and not ended:
+            return "#ef4444", True   # active orphan — red dashed
+        if has_inc:
+            return "#f97316", False  # triggered — orange solid
+        return "#94a3b8", False      # resolved orphan — slate solid
+    return _ROOTLY_NODE_COLORS.get(node_type, "#6b7280"), False
+
 
 def _html_styles() -> str:
     return """<style>
@@ -302,11 +340,14 @@ def to_html(
     communities: dict[int, list[str]],
     output_path: str,
     community_labels: dict[int, str] | None = None,
+    rootly: bool = False,
 ) -> None:
     """Generate an interactive vis.js HTML visualization of the graph.
 
-    Features: node size by degree, click-to-inspect panel, search box,
-    community filter, physics clustering by community, confidence-styled edges.
+    When rootly=True uses Rootly-specific node coloring (severity, alert
+    signal/noise) and adds a filter sidebar (team, severity, status, alert
+    type, time range).
+
     Raises ValueError if graph exceeds MAX_NODES_FOR_VIZ.
     """
     if G.number_of_nodes() > MAX_NODES_FOR_VIZ:
@@ -314,6 +355,10 @@ def to_html(
             f"Graph has {G.number_of_nodes()} nodes - too large for HTML viz. "
             f"Use --no-viz or reduce input size."
         )
+
+    if rootly:
+        _to_html_rootly(G, communities, output_path, community_labels)
+        return
 
     node_community = _node_community_map(communities)
     degree = dict(G.degree())
@@ -327,7 +372,6 @@ def to_html(
         label = sanitize_label(data.get("label", node_id))
         deg = degree.get(node_id, 1)
         size = 10 + 30 * (deg / max_deg)
-        # Only show label for high-degree nodes by default; others show on hover
         font_size = 12 if deg >= max_deg * 0.15 else 0
         vis_nodes.append({
             "id": node_id,
@@ -405,6 +449,533 @@ def to_html(
 </html>"""
 
     Path(output_path).write_text(html, encoding="utf-8")
+
+
+def _to_html_rootly(
+    G: nx.Graph,
+    communities: dict[int, list[str]],
+    output_path: str,
+    community_labels: dict[int, str] | None = None,
+) -> None:
+    """Rootly-specific HTML: severity coloring, alert signal/noise, filter sidebar."""
+    degree  = dict(G.degree())
+    max_deg = max(degree.values()) if degree else 1
+    max_deg = max_deg or 1  # guard zero-degree graphs
+
+    vis_nodes = []
+    all_teams: set[str] = set()
+    ts_values: list[float] = []
+
+    for node_id, data in G.nodes(data=True):
+        label     = sanitize_label(data.get("label", node_id))
+        deg       = degree.get(node_id, 1)
+        size      = 10 + 30 * (deg / max_deg)
+        font_size = 12 if deg >= max_deg * 0.15 else 0
+        color_hex, is_dashed = _rootly_node_color(data)
+
+        node_type = data.get("node_type", "")
+        severity  = data.get("severity", "")
+        status    = data.get("status", "")
+        started   = data.get("started_at", "")
+        resolved  = data.get("resolved_at", "")
+        has_inc   = bool(data.get("has_incident", False))
+        team_name = label.replace("Team: ", "") if node_type == "team" else ""
+
+        if team_name:
+            all_teams.add(team_name)
+
+        # Parse started_at to unix ms for time range slider
+        ts_ms = 0
+        if started:
+            try:
+                from datetime import datetime, timezone
+                dt = datetime.fromisoformat(started.replace("Z", "+00:00"))
+                ts_ms = int(dt.timestamp() * 1000)
+                ts_values.append(ts_ms)
+            except Exception:
+                pass
+
+        tooltip_lines = [f"<b>{label}</b>"]
+        if node_type == "incident":
+            tooltip_lines += [
+                f"Severity: {severity or 'N/A'}",
+                f"Status: {status or 'N/A'}",
+                f"Started: {started[:10] if started else 'N/A'}",
+                f"Resolved: {resolved[:10] if resolved else 'open'}",
+            ]
+        elif node_type == "alert":
+            src = data.get("source_name", "")
+            tooltip_lines += [
+                f"Status: {status or 'N/A'}",
+                f"Source: {src or 'N/A'}",
+                f"Triggered incident: {'yes' if has_inc else 'no'}",
+                f"Started: {started[:10] if started else 'N/A'}",
+            ]
+
+        vis_nodes.append({
+            "id":        node_id,
+            "label":     label,
+            "color": {
+                "background": color_hex,
+                "border":     "#ffffff" if is_dashed else color_hex,
+                "highlight":  {"background": "#ffffff", "border": color_hex},
+            },
+            "borderDashes": [6, 3] if is_dashed else False,
+            "size":      round(size, 1),
+            "font":      {"size": font_size, "color": "#ffffff"},
+            "title":     "<br>".join(tooltip_lines),
+            # filter metadata
+            "node_type": node_type,
+            "severity":  severity.upper().replace(" ", "").replace("-", ""),
+            "status":    status,
+            "started_at_ms": ts_ms,
+            "resolved_at": resolved,
+            "has_incident": has_inc,
+            "team_name": team_name,
+            "degree":    deg,
+        })
+
+    vis_edges = []
+    for u, v, data in G.edges(data=True):
+        relation   = data.get("relation", "")
+        confidence = data.get("confidence", "EXTRACTED")
+        edge_color = _ROOTLY_EDGE_COLORS.get(relation, "#888888")
+        is_orphan_target = relation == "targets"
+        vis_edges.append({
+            "from":      u,
+            "to":        v,
+            "label":     "",
+            "title":     f"{relation} [{confidence}]",
+            "dashes":    is_orphan_target,
+            "width":     2,
+            "color":     {"color": edge_color, "opacity": 0.75},
+            "relation":  relation,
+        })
+
+    teams_list = sorted(all_teams)
+    ts_min = int(min(ts_values)) if ts_values else 0
+    ts_max = int(max(ts_values)) if ts_values else 0
+
+    nodes_json  = json.dumps(vis_nodes)
+    edges_json  = json.dumps(vis_edges)
+    teams_json  = json.dumps(teams_list)
+    stats       = f"{G.number_of_nodes()} nodes &middot; {G.number_of_edges()} edges"
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Rootly Incident Graph</title>
+<script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+{_rootly_styles()}
+</head>
+<body>
+<div id="graph"></div>
+<div id="sidebar">
+  <div id="search-wrap">
+    <input id="search" type="text" placeholder="Search nodes..." autocomplete="off">
+    <div id="search-results"></div>
+  </div>
+  <div id="info-panel">
+    <h3>Node Info</h3>
+    <div id="info-content"><span class="empty">Click a node to inspect it</span></div>
+  </div>
+  <div id="filters-wrap">
+    <h3>Filters</h3>
+    <div class="filter-section">
+      <label class="filter-label">Team</label>
+      <select id="filter-team">
+        <option value="">All Teams</option>
+      </select>
+    </div>
+    <div class="filter-section">
+      <label class="filter-label">Severity</label>
+      <div class="checkbox-row"><label><input type="checkbox" class="sev-cb" value="SEV1" checked> <span class="sev-dot" style="background:#ef4444"></span> SEV1</label></div>
+      <div class="checkbox-row"><label><input type="checkbox" class="sev-cb" value="SEV2" checked> <span class="sev-dot" style="background:#f97316"></span> SEV2</label></div>
+      <div class="checkbox-row"><label><input type="checkbox" class="sev-cb" value="SEV3" checked> <span class="sev-dot" style="background:#eab308"></span> SEV3</label></div>
+      <div class="checkbox-row"><label><input type="checkbox" class="sev-cb" value="SEV4" checked> <span class="sev-dot" style="background:#22c55e"></span> SEV4</label></div>
+      <div class="checkbox-row"><label><input type="checkbox" class="sev-cb" value="" checked> <span class="sev-dot" style="background:#6b7280"></span> Unknown</label></div>
+    </div>
+    <div class="filter-section">
+      <label class="filter-label">Incidents</label>
+      <div class="checkbox-row"><label><input type="radio" name="inc-status" value="all" checked> All</label></div>
+      <div class="checkbox-row"><label><input type="radio" name="inc-status" value="open"> Open only</label></div>
+    </div>
+    <div class="filter-section">
+      <label class="filter-label">Alerts</label>
+      <div class="checkbox-row"><label><input type="checkbox" id="show-triggered" checked> <span class="sev-dot" style="background:#f97316"></span> Triggered</label></div>
+      <div class="checkbox-row"><label><input type="checkbox" id="show-orphan"> <span class="sev-dot" style="background:#94a3b8"></span> Orphaned <span style="font-size:10px;color:#888">(not collected by default)</span></label></div>
+    </div>
+    <div class="filter-section" id="time-section">
+      <label class="filter-label">Time Range</label>
+      <div id="time-labels"><span id="time-min-lbl"></span><span id="time-max-lbl"></span></div>
+      <div id="range-wrap">
+        <input type="range" id="range-min" min="0" max="100" value="0">
+        <input type="range" id="range-max" min="0" max="100" value="100">
+      </div>
+    </div>
+    <button id="reset-btn">Reset Filters</button>
+  </div>
+  <div id="legend-wrap">
+    <h3>Legend</h3>
+    <div id="legend">
+      <div class="legend-item"><span class="legend-dot" style="background:#ef4444"></span><span>Incident SEV1</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#f97316"></span><span>Incident SEV2 / Alert triggered</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#eab308"></span><span>Incident SEV3</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#22c55e"></span><span>Incident SEV4</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#6b7280"></span><span>Incident unknown sev</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#3b82f6"></span><span>Team</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#8b5cf6"></span><span>Service</span></div>
+      <div class="legend-item"><span class="legend-dot" style="background:#94a3b8" style="opacity:0.5"></span><span style="color:#888">Alert orphaned (hidden by default)</span></div>
+      <div class="legend-item edge-item"><span class="edge-line" style="background:#ef4444"></span><span>affects</span></div>
+      <div class="legend-item edge-item"><span class="edge-line" style="background:#f97316"></span><span>triggered</span></div>
+      <div class="legend-item edge-item"><span class="edge-line" style="background:#3b82f6"></span><span>owns</span></div>
+      <div class="legend-item edge-item"><span class="edge-line" style="background:#22c55e"></span><span>responded_by</span></div>
+      <div class="legend-item" style="margin-top:6px;font-size:11px;color:#555">Dashed border = open/active</div>
+    </div>
+  </div>
+  <div id="stats">{stats}</div>
+</div>
+{_rootly_script(nodes_json, edges_json, teams_json, ts_min, ts_max)}
+</body>
+</html>"""
+
+    Path(output_path).write_text(html, encoding="utf-8")
+
+
+def _rootly_styles() -> str:
+    return """<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #0f0f1a; color: #e0e0e0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; display: flex; height: 100vh; overflow: hidden; }
+  #graph { flex: 1; }
+  #sidebar { width: 300px; background: #1a1a2e; border-left: 1px solid #2a2a4e; display: flex; flex-direction: column; overflow-y: auto; overflow-x: hidden; }
+  #search-wrap { padding: 12px; border-bottom: 1px solid #2a2a4e; }
+  #search { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 7px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  #search:focus { border-color: #4E79A7; }
+  #search-results { max-height: 140px; overflow-y: auto; padding: 4px 0; display: none; }
+  .search-item { padding: 4px 6px; cursor: pointer; border-radius: 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .search-item:hover { background: #2a2a4e; }
+  #info-panel { padding: 14px; border-bottom: 1px solid #2a2a4e; min-height: 120px; }
+  #info-panel h3, #filters-wrap h3, #legend-wrap h3 { font-size: 11px; color: #888; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.08em; }
+  #info-content { font-size: 12px; color: #ccc; line-height: 1.6; }
+  #info-content .field { margin-bottom: 4px; }
+  #info-content .field b { color: #e0e0e0; }
+  #info-content .empty { color: #555; font-style: italic; }
+  .neighbor-link { display: block; padding: 2px 6px; margin: 2px 0; border-radius: 3px; cursor: pointer; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid #333; }
+  .neighbor-link:hover { background: #2a2a4e; }
+  #neighbors-list { max-height: 120px; overflow-y: auto; margin-top: 4px; }
+  #filters-wrap { padding: 14px; border-bottom: 1px solid #2a2a4e; }
+  .filter-section { margin-bottom: 14px; }
+  .filter-label { display: block; font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; }
+  select#filter-team { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 6px 8px; border-radius: 5px; font-size: 12px; outline: none; }
+  .checkbox-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px; color: #ccc; cursor: pointer; }
+  .checkbox-row label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
+  .sev-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  #time-labels { display: flex; justify-content: space-between; font-size: 10px; color: #666; margin-bottom: 4px; }
+  #range-wrap { position: relative; height: 24px; }
+  #range-wrap input[type=range] { position: absolute; width: 100%; pointer-events: none; appearance: none; height: 4px; background: transparent; }
+  #range-wrap input[type=range]::-webkit-slider-thumb { appearance: none; width: 14px; height: 14px; border-radius: 50%; background: #4E79A7; pointer-events: all; cursor: pointer; margin-top: -5px; }
+  #range-wrap input[type=range]::-webkit-slider-runnable-track { height: 4px; background: #2a2a4e; border-radius: 2px; }
+  #reset-btn { width: 100%; padding: 7px; background: #2a2a4e; color: #aaa; border: 1px solid #3a3a5e; border-radius: 5px; cursor: pointer; font-size: 12px; margin-top: 4px; }
+  #reset-btn:hover { background: #3a3a5e; color: #e0e0e0; }
+  #legend-wrap { padding: 14px; border-bottom: 1px solid #2a2a4e; }
+  .legend-item { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-size: 12px; color: #ccc; }
+  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .edge-item .edge-line { display: inline-block; width: 20px; height: 3px; border-radius: 2px; flex-shrink: 0; }
+  #stats { padding: 10px 14px; font-size: 11px; color: #444; }
+</style>"""
+
+
+def _rootly_script(
+    nodes_json: str,
+    edges_json: str,
+    teams_json: str,
+    ts_min: int,
+    ts_max: int,
+) -> str:
+    return f"""<script>
+const RAW_NODES = {nodes_json};
+const RAW_EDGES = {edges_json};
+const TEAMS     = {teams_json};
+const TS_MIN    = {ts_min};
+const TS_MAX    = {ts_max};
+
+// ── Build vis datasets ──────────────────────────────────────────────────────
+const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
+  id: n.id, label: n.label, color: n.color, size: n.size,
+  font: n.font, title: n.title, borderDashes: n.borderDashes || false,
+  _node_type: n.node_type, _severity: n.severity, _status: n.status,
+  _started_at_ms: n.started_at_ms, _resolved_at: n.resolved_at,
+  _has_incident: n.has_incident, _team_name: n.team_name, _degree: n.degree,
+}})));
+
+const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
+  id: i, from: e.from, to: e.to, label: '', title: e.title,
+  dashes: e.dashes, width: e.width, color: e.color,
+  arrows: {{ to: {{ enabled: true, scaleFactor: 0.5 }} }},
+  _relation: e.relation,
+}})));
+
+const container = document.getElementById('graph');
+const network = new vis.Network(container, {{ nodes: nodesDS, edges: edgesDS }}, {{
+  physics: {{
+    enabled: true,
+    solver: 'forceAtlas2Based',
+    forceAtlas2Based: {{ gravitationalConstant: -60, centralGravity: 0.005, springLength: 120, springConstant: 0.08, damping: 0.4, avoidOverlap: 0.8 }},
+    stabilization: {{ iterations: 200, fit: true }},
+  }},
+  interaction: {{ hover: true, tooltipDelay: 100, hideEdgesOnDrag: true }},
+  nodes: {{ shape: 'dot', borderWidth: 2 }},
+  edges: {{ smooth: {{ type: 'continuous', roundness: 0.2 }}, selectionWidth: 3 }},
+}});
+network.once('stabilizationIterationsDone', () => network.setOptions({{ physics: {{ enabled: false }} }}));
+
+// ── Filter state ─────────────────────────────────────────────────────────────
+const filterState = {{
+  team:         '',
+  severities:   new Set(['SEV1','SEV2','SEV3','SEV4','']),
+  incStatus:    'all',    // 'all' | 'open'
+  showTriggered: true,
+  showOrphan:    false,
+  tsMin:         TS_MIN,
+  tsMax:         TS_MAX,
+}};
+
+function nodeVisible(n) {{
+  // Teams and services: always show unless team filter excludes them
+  if (n._node_type === 'team') {{
+    if (filterState.team && n._team_name !== filterState.team) return false;
+    return true;
+  }}
+  if (n._node_type === 'service') {{
+    if (filterState.team) {{
+      // Show service if connected to selected team
+      const connIds = network.getConnectedNodes(n.id);
+      return connIds.some(cid => {{
+        const cn = nodesDS.get(cid);
+        return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
+      }});
+    }}
+    return true;
+  }}
+
+  if (n._node_type === 'incident') {{
+    // Severity filter
+    const sev = n._severity || '';
+    if (!filterState.severities.has(sev)) return false;
+    // Open only
+    if (filterState.incStatus === 'open' && n._resolved_at) return false;
+    // Time range
+    if (filterState.tsMin > 0 && n._started_at_ms > 0) {{
+      if (n._started_at_ms < filterState.tsMin || n._started_at_ms > filterState.tsMax) return false;
+    }}
+    // Team filter: show incident if connected to selected team
+    if (filterState.team) {{
+      const connIds = network.getConnectedNodes(n.id);
+      return connIds.some(cid => {{
+        const cn = nodesDS.get(cid);
+        return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
+      }});
+    }}
+    return true;
+  }}
+
+  if (n._node_type === 'alert') {{
+    if (n._has_incident && !filterState.showTriggered) return false;
+    if (!n._has_incident && !filterState.showOrphan)   return false;
+    // Time range
+    if (filterState.tsMin > 0 && n._started_at_ms > 0) {{
+      if (n._started_at_ms < filterState.tsMin || n._started_at_ms > filterState.tsMax) return false;
+    }}
+    // Team filter: show alert if its incident is connected to selected team
+    if (filterState.team && n._has_incident) {{
+      const connIds = network.getConnectedNodes(n.id);
+      return connIds.some(cid => {{
+        const inc = nodesDS.get(cid);
+        if (!inc || inc._node_type !== 'incident') return false;
+        const incConns = network.getConnectedNodes(cid);
+        return incConns.some(tid => {{
+          const tn = nodesDS.get(tid);
+          return tn && tn._node_type === 'team' && tn._team_name === filterState.team;
+        }});
+      }});
+    }}
+    return true;
+  }}
+
+  return true;
+}}
+
+function applyFilters() {{
+  const updates = nodesDS.getIds().map(id => {{
+    const n = nodesDS.get(id);
+    return {{ id, hidden: !nodeVisible(n) }};
+  }});
+  nodesDS.update(updates);
+}}
+
+// ── Populate team dropdown ────────────────────────────────────────────────────
+const teamSelect = document.getElementById('filter-team');
+TEAMS.forEach(t => {{
+  const opt = document.createElement('option');
+  opt.value = t; opt.textContent = t;
+  teamSelect.appendChild(opt);
+}});
+teamSelect.addEventListener('change', () => {{
+  filterState.team = teamSelect.value;
+  applyFilters();
+}});
+
+// ── Severity checkboxes ───────────────────────────────────────────────────────
+document.querySelectorAll('.sev-cb').forEach(cb => {{
+  cb.addEventListener('change', () => {{
+    filterState.severities.clear();
+    document.querySelectorAll('.sev-cb:checked').forEach(c => filterState.severities.add(c.value));
+    applyFilters();
+  }});
+}});
+
+// ── Incident status radio ─────────────────────────────────────────────────────
+document.querySelectorAll('input[name="inc-status"]').forEach(r => {{
+  r.addEventListener('change', () => {{
+    filterState.incStatus = r.value;
+    applyFilters();
+  }});
+}});
+
+// ── Alert toggles ─────────────────────────────────────────────────────────────
+document.getElementById('show-triggered').addEventListener('change', e => {{
+  filterState.showTriggered = e.target.checked;
+  applyFilters();
+}});
+document.getElementById('show-orphan').addEventListener('change', e => {{
+  filterState.showOrphan = e.target.checked;
+  applyFilters();
+}});
+
+// ── Time range slider ─────────────────────────────────────────────────────────
+const rangeMin = document.getElementById('range-min');
+const rangeMax = document.getElementById('range-max');
+const minLbl   = document.getElementById('time-min-lbl');
+const maxLbl   = document.getElementById('time-max-lbl');
+
+function fmtDate(ms) {{
+  if (!ms) return '';
+  return new Date(ms).toISOString().slice(0, 10);
+}}
+
+if (TS_MIN > 0 && TS_MAX > TS_MIN) {{
+  minLbl.textContent = fmtDate(TS_MIN);
+  maxLbl.textContent = fmtDate(TS_MAX);
+  filterState.tsMin = TS_MIN;
+  filterState.tsMax = TS_MAX;
+
+  function onRangeChange() {{
+    let lo = parseInt(rangeMin.value);
+    let hi = parseInt(rangeMax.value);
+    if (lo > hi) {{ const tmp = lo; lo = hi; hi = tmp; }}
+    const tsRange = TS_MAX - TS_MIN;
+    filterState.tsMin = TS_MIN + (lo / 100) * tsRange;
+    filterState.tsMax = TS_MIN + (hi / 100) * tsRange;
+    minLbl.textContent = fmtDate(filterState.tsMin);
+    maxLbl.textContent = fmtDate(filterState.tsMax);
+    applyFilters();
+  }}
+  rangeMin.addEventListener('input', onRangeChange);
+  rangeMax.addEventListener('input', onRangeChange);
+}} else {{
+  document.getElementById('time-section').style.display = 'none';
+}}
+
+// ── Reset ─────────────────────────────────────────────────────────────────────
+document.getElementById('reset-btn').addEventListener('click', () => {{
+  teamSelect.value = '';
+  filterState.team = '';
+  filterState.severities = new Set(['SEV1','SEV2','SEV3','SEV4','']);
+  filterState.incStatus = 'all';
+  filterState.showTriggered = true;
+  filterState.showOrphan = false;
+  filterState.tsMin = TS_MIN;
+  filterState.tsMax = TS_MAX;
+  document.querySelectorAll('.sev-cb').forEach(cb => cb.checked = true);
+  document.querySelector('input[name="inc-status"][value="all"]').checked = true;
+  document.getElementById('show-triggered').checked = true;
+  document.getElementById('show-orphan').checked = false;
+  rangeMin.value = 0; rangeMax.value = 100;
+  if (TS_MIN > 0) {{ minLbl.textContent = fmtDate(TS_MIN); maxLbl.textContent = fmtDate(TS_MAX); }}
+  applyFilters();
+}});
+
+// ── Node info panel ──────────────────────────────────────────────────────────
+function showInfo(nodeId) {{
+  const n = nodesDS.get(nodeId);
+  if (!n) return;
+  const connIds = network.getConnectedNodes(nodeId);
+  const connItems = connIds.map(cid => {{
+    const cn = nodesDS.get(cid);
+    const bg = cn ? cn.color.background : '#555';
+    return `<span class="neighbor-link" style="border-left-color:${{bg}}" onclick="focusNode('${{cid}}')">${{cn ? cn.label : cid}}</span>`;
+  }}).join('');
+  const typeLabel = n._node_type || 'unknown';
+  const extraFields = [];
+  if (n._node_type === 'incident') {{
+    if (n._severity) extraFields.push(`<div class="field">Severity: ${{n._severity}}</div>`);
+    extraFields.push(`<div class="field">Status: ${{n._resolved_at ? 'resolved' : 'open'}}</div>`);
+  }}
+  if (n._node_type === 'alert') {{
+    extraFields.push(`<div class="field">Type: ${{n._has_incident ? 'triggered' : 'orphan'}}</div>`);
+  }}
+  document.getElementById('info-content').innerHTML = `
+    <div class="field"><b>${{n.label}}</b></div>
+    <div class="field" style="color:#888;font-size:11px">${{typeLabel}}</div>
+    ${{extraFields.join('')}}
+    <div class="field">Connections: ${{connIds.length}}</div>
+    ${{connIds.length ? `<div id="neighbors-list">${{connItems}}</div>` : ''}}
+  `;
+}}
+
+function focusNode(nodeId) {{
+  network.focus(nodeId, {{ scale: 1.4, animation: true }});
+  network.selectNodes([nodeId]);
+  showInfo(nodeId);
+}}
+
+network.on('click', params => {{
+  if (params.nodes.length > 0) showInfo(params.nodes[0]);
+  else document.getElementById('info-content').innerHTML = '<span class="empty">Click a node to inspect it</span>';
+}});
+
+// ── Search ────────────────────────────────────────────────────────────────────
+const searchInput   = document.getElementById('search');
+const searchResults = document.getElementById('search-results');
+searchInput.addEventListener('input', () => {{
+  const q = searchInput.value.toLowerCase().trim();
+  searchResults.innerHTML = '';
+  if (!q) {{ searchResults.style.display = 'none'; return; }}
+  const matches = RAW_NODES.filter(n => n.label.toLowerCase().includes(q)).slice(0, 20);
+  if (!matches.length) {{ searchResults.style.display = 'none'; return; }}
+  searchResults.style.display = 'block';
+  matches.forEach(n => {{
+    const el = document.createElement('div');
+    el.className = 'search-item';
+    el.textContent = n.label;
+    el.style.borderLeft = `3px solid ${{n.color.background}}`;
+    el.style.paddingLeft = '8px';
+    el.onclick = () => {{
+      network.focus(n.id, {{ scale: 1.5, animation: true }});
+      network.selectNodes([n.id]);
+      showInfo(n.id);
+      searchResults.style.display = 'none';
+      searchInput.value = '';
+    }};
+    searchResults.appendChild(el);
+  }});
+}});
+document.addEventListener('click', e => {{
+  if (!searchResults.contains(e.target) && e.target !== searchInput)
+    searchResults.style.display = 'none';
+}});
+</script>"""
 
 
 # Keep backward-compatible alias - skill.md calls generate_html

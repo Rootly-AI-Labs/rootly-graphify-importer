@@ -29,12 +29,14 @@ def _print_summary(
     result,  # RunResult
     corpus_dir: Path,
     n_incidents: int,
-    n_retrospectives: int,
+    n_alerts: int,
+    n_teams: int,
 ) -> None:
     print()
     print("  ── Summary ─────────────────────────────")
     print(f"  Fetched {n_incidents} incident(s)")
-    print(f"  Fetched {n_retrospectives} retrospective(s)")
+    print(f"  Fetched {n_alerts} alert(s)")
+    print(f"  Fetched {n_teams} team(s)")
     print(f"  Corpus saved to {corpus_dir.resolve()}")
     print()
     if result.success:
@@ -112,17 +114,24 @@ def run_rootly_command(
         print("  No incidents found for the selected date range.")
         print("  Writing empty manifest and exiting.")
         from graphify.rootly_export import export_rootly_corpus
-        export_rootly_corpus(config.output_dir, [], [], config)
+        export_rootly_corpus(config.output_dir, [], [], [], config)
         return
 
-    print("  Fetching retrospectives…")
+    print(f"  Fetching triggered alerts for {len(incidents)} incident(s)...")
     try:
-        retrospectives = client.fetch_retrospectives_for_incidents(incidents)
+        alerts = client.fetch_alerts(incidents)
     except Exception as exc:
-        print(f"  Warning: could not fetch retrospectives: {exc}")
-        retrospectives = []
+        print(f"  Warning: could not fetch alerts: {exc}")
+        alerts = []
+    print(f"  Found {len(alerts)} triggered alert(s).")
 
-    print(f"  Found {len(retrospectives)} retrospective(s).")
+    print("  Fetching teams…")
+    try:
+        teams = client.fetch_teams()
+    except Exception as exc:
+        print(f"  Warning: could not fetch teams: {exc}")
+        teams = []
+    print(f"  Found {len(teams)} team(s).")
 
     # ---- write corpus ----
     from graphify.rootly_export import export_rootly_corpus
@@ -130,7 +139,8 @@ def run_rootly_command(
     corpus_dir = export_rootly_corpus(
         config.output_dir,
         incidents,
-        retrospectives,
+        alerts,
+        teams,
         config,
     )
 
@@ -140,7 +150,7 @@ def run_rootly_command(
     result = run_graphify(corpus_dir, config.graphify_mode)
 
     # ---- print summary ----
-    _print_summary(result, corpus_dir, len(incidents), len(retrospectives))
+    _print_summary(result, corpus_dir, len(incidents), len(alerts), len(teams))
 
     if not result.success:
         sys.exit(1)

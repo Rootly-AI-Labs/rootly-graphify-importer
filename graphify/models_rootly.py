@@ -94,6 +94,8 @@ class RootlyIncident:
     severity: str
     status: str
     started_at: str
+    acknowledged_at: str
+    mitigated_at: str
     resolved_at: str
     description: str
     services: list[str]
@@ -103,18 +105,27 @@ class RootlyIncident:
 
 
 @dataclass
-class RootlyRetrospective:
-    """Normalised retrospective/post-mortem from the Rootly API."""
+class RootlyAlert:
+    """Normalised alert from the Rootly API."""
 
     id: str
-    incident_id: str
-    incident_title: str
-    status: str
-    content: str
-    created_at: str
-    updated_at: str
+    summary: str
+    status: str          # open, triggered, acknowledged, resolved
+    source: str          # datadog, pagerduty, rootly, etc.
+    noise: str           # "noise", "not_noise", or ""
     started_at: str
-    mitigated_at: str
-    resolved_at: str
-    url: str
+    ended_at: str
+    service_ids: list[str]
+    team_ids: list[str]
+    incident_id: str     # empty string if not attached to an incident
+    raw: dict
+
+
+@dataclass
+class RootlyTeam:
+    """Normalised team from the Rootly API."""
+
+    id: str
+    name: str
+    slug: str
     raw: dict

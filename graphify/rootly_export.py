@@ -5,8 +5,13 @@ Output layout:
         rootly-export.json          raw combined JSON dump
         incidents/
             incident_<id>.md
-        retrospectives/
-            retrospective_<id>.md
+            incident_<id>.json
+        alerts/
+            alert_<id>.md
+            alert_<id>.json
+        teams/
+            team_<id>.md
+            team_<id>.json
         metadata/
             run_config.json
             fetch_manifest.json
@@ -20,9 +25,10 @@ from pathlib import Path
 from graphify.models_rootly import (
     FetchManifest,
     GraphifyMode,
+    RootlyAlert,
     RootlyFlowConfig,
     RootlyIncident,
-    RootlyRetrospective,
+    RootlyTeam,
 )
 
 
@@ -37,7 +43,7 @@ def _yaml_str(s: str) -> str:
 
 def incident_to_markdown(incident: RootlyIncident) -> str:
     services = ", ".join(incident.services) if incident.services else "N/A"
-    teams = ", ".join(incident.teams) if incident.teams else "N/A"
+    teams    = ", ".join(incident.teams)    if incident.teams    else "N/A"
     description = incident.description.strip() if incident.description else "_No description provided._"
 
     return f"""\
@@ -48,6 +54,8 @@ def incident_to_markdown(incident: RootlyIncident) -> str:
 - **Severity:** {incident.severity or "N/A"}
 - **Status:** {incident.status}
 - **Started At:** {incident.started_at or "N/A"}
+- **Acknowledged At:** {incident.acknowledged_at or "N/A"}
+- **Mitigated At:** {incident.mitigated_at or "N/A"}
 - **Resolved At:** {incident.resolved_at or "N/A"}
 - **Services:** {services}
 - **Teams:** {teams}
@@ -63,36 +71,44 @@ def incident_to_markdown(incident: RootlyIncident) -> str:
 """
 
 
-def retrospective_to_markdown(
-    retro: RootlyRetrospective,
-    config: RootlyFlowConfig,
-) -> str:
-    content = retro.content.strip() if retro.content else "_No retrospective content recorded._"
-    url_line = f"- **URL:** {retro.url}" if retro.url else ""
+def alert_to_markdown(alert: RootlyAlert) -> str:
+    services = ", ".join(alert.service_ids) if alert.service_ids else "N/A"
+    teams    = ", ".join(alert.team_ids)    if alert.team_ids    else "N/A"
+    incident_line = f"- **Incident ID:** {alert.incident_id}" if alert.incident_id else "- **Incident ID:** (none — orphan alert)"
 
     return f"""\
-# Rootly Retrospective: Incident {retro.incident_id}
+# Rootly Alert: {alert.id}
 
-- **Retrospective ID:** {retro.id}
-- **Incident ID:** {retro.incident_id}
-- **Title:** {retro.incident_title}
-- **Status:** {retro.status}
-- **Created At:** {retro.created_at or "N/A"}
-- **Updated At:** {retro.updated_at or "N/A"}
-- **Started At:** {retro.started_at or "N/A"}
-- **Mitigated At:** {retro.mitigated_at or "N/A"}
-- **Resolved At:** {retro.resolved_at or "N/A"}
-{url_line}
-
-## Retrospective Content
-
-{content}
+- **Alert ID:** {alert.id}
+- **Summary:** {alert.summary}
+- **Status:** {alert.status}
+- **Source:** {alert.source or "N/A"}
+- **Noise:** {alert.noise or "N/A"}
+- **Started At:** {alert.started_at or "N/A"}
+- **Ended At:** {alert.ended_at or "N/A"}
+- **Services:** {services}
+- **Teams:** {teams}
+{incident_line}
 
 ## Metadata
 
 - Source: Rootly API
 - Exported By: Graphify Rootly Flow
-- Date Range Preset: past_{config.date_range_preset}
+"""
+
+
+def team_to_markdown(team: RootlyTeam) -> str:
+    return f"""\
+# Rootly Team: {team.id}
+
+- **Team ID:** {team.id}
+- **Name:** {team.name}
+- **Slug:** {team.slug}
+
+## Metadata
+
+- Source: Rootly API
+- Exported By: Graphify Rootly Flow
 """
 
 
@@ -102,7 +118,6 @@ def retrospective_to_markdown(
 
 def _ensure_gitignore(output_dir: Path) -> None:
     """Add output_dir to the nearest .gitignore if we're inside a git repo."""
-    # Walk up looking for a .gitignore in a git root
     candidate = output_dir.resolve()
     for parent in [candidate] + list(candidate.parents):
         git_dir = parent / ".git"
@@ -123,14 +138,15 @@ def _ensure_gitignore(output_dir: Path) -> None:
                     encoding="utf-8",
                 )
             print(f"  .gitignore       →  added {dir_name}")
-            return  # Only update the first (closest) .gitignore found
+            return
 
 
 def write_manifest(
     output_dir: Path,
     config: RootlyFlowConfig,
     incidents: list[RootlyIncident],
-    retrospectives: list[RootlyRetrospective],
+    alerts: list[RootlyAlert],
+    teams: list[RootlyTeam],
 ) -> Path:
     manifest = FetchManifest(
         date_range_preset=config.date_range_preset,
@@ -138,7 +154,7 @@ def write_manifest(
         end_at=config.end_at.isoformat(),
         fetched_at=datetime.now(timezone.utc).isoformat(),
         incident_count=len(incidents),
-        retrospective_count=len(retrospectives),
+        retrospective_count=0,
         graphify_mode=config.graphify_mode.name,
         output_dir=str(output_dir.resolve()),
     )
@@ -146,10 +162,13 @@ def write_manifest(
     metadata_dir = output_dir / "metadata"
     metadata_dir.mkdir(parents=True, exist_ok=True)
 
+    # Extend manifest with alert + team counts
+    manifest_dict = manifest.__dict__.copy()
+    manifest_dict["alert_count"] = len(alerts)
+    manifest_dict["team_count"]  = len(teams)
+
     manifest_path = metadata_dir / "fetch_manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest.__dict__, indent=2), encoding="utf-8"
-    )
+    manifest_path.write_text(json.dumps(manifest_dict, indent=2), encoding="utf-8")
     return manifest_path
 
 
@@ -174,7 +193,8 @@ def write_run_config(output_dir: Path, config: RootlyFlowConfig) -> Path:
 def export_rootly_corpus(
     output_dir: Path,
     incidents: list[RootlyIncident],
-    retrospectives: list[RootlyRetrospective],
+    alerts: list[RootlyAlert],
+    teams: list[RootlyTeam],
     config: RootlyFlowConfig,
 ) -> Path:
     """Write the full Rootly corpus to disk. Returns the corpus directory.
@@ -189,24 +209,40 @@ def export_rootly_corpus(
     inc_dir = output_dir / "incidents"
     inc_dir.mkdir(exist_ok=True)
     for incident in incidents:
-        md_path = inc_dir / f"incident_{incident.id}.md"
-        md_path.write_text(incident_to_markdown(incident), encoding="utf-8")
-        raw_path = inc_dir / f"incident_{incident.id}.json"
-        raw_path.write_text(json.dumps(incident.raw, indent=2), encoding="utf-8")
+        (inc_dir / f"incident_{incident.id}.md").write_text(
+            incident_to_markdown(incident), encoding="utf-8"
+        )
+        (inc_dir / f"incident_{incident.id}.json").write_text(
+            json.dumps(incident.raw, indent=2), encoding="utf-8"
+        )
 
-    # ---- retrospectives ----
-    retro_dir = output_dir / "retrospectives"
-    retro_dir.mkdir(exist_ok=True)
-    for retro in retrospectives:
-        md_path = retro_dir / f"retrospective_{retro.id}.md"
-        md_path.write_text(retrospective_to_markdown(retro, config), encoding="utf-8")
-        raw_path = retro_dir / f"retrospective_{retro.id}.json"
-        raw_path.write_text(json.dumps(retro.raw, indent=2), encoding="utf-8")
+    # ---- alerts ----
+    alert_dir = output_dir / "alerts"
+    alert_dir.mkdir(exist_ok=True)
+    for alert in alerts:
+        (alert_dir / f"alert_{alert.id}.md").write_text(
+            alert_to_markdown(alert), encoding="utf-8"
+        )
+        (alert_dir / f"alert_{alert.id}.json").write_text(
+            json.dumps(alert.raw, indent=2), encoding="utf-8"
+        )
+
+    # ---- teams ----
+    team_dir = output_dir / "teams"
+    team_dir.mkdir(exist_ok=True)
+    for team in teams:
+        (team_dir / f"team_{team.id}.md").write_text(
+            team_to_markdown(team), encoding="utf-8"
+        )
+        (team_dir / f"team_{team.id}.json").write_text(
+            json.dumps(team.raw, indent=2), encoding="utf-8"
+        )
 
     # ---- combined raw dump ----
     combined = {
         "incidents": [i.raw for i in incidents],
-        "retrospectives": [r.raw for r in retrospectives],
+        "alerts":    [a.raw for a in alerts],
+        "teams":     [t.raw for t in teams],
     }
     (output_dir / "rootly-export.json").write_text(
         json.dumps(combined, indent=2), encoding="utf-8"
@@ -214,6 +250,6 @@ def export_rootly_corpus(
 
     # ---- metadata ----
     write_run_config(output_dir, config)
-    write_manifest(output_dir, config, incidents, retrospectives)
+    write_manifest(output_dir, config, incidents, alerts, teams)
 
     return output_dir

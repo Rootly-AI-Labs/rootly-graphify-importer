@@ -1,6 +1,6 @@
 """Rootly API client.
 
-Read-only: fetches incidents and retrospectives (post-mortems).
+Read-only: fetches incidents, alerts, and teams.
 Uses only stdlib (urllib) so no extra hard dependency is introduced.
 
 Auth:  Authorization: Bearer <token>
@@ -24,8 +24,9 @@ from typing import Any
 
 from graphify.models_rootly import (
     DateRangePreset,
+    RootlyAlert,
     RootlyIncident,
-    RootlyRetrospective,
+    RootlyTeam,
 )
 
 _BASE = "https://api.rootly.com"
@@ -204,6 +205,8 @@ def _normalise_incident(raw: dict) -> RootlyIncident:
         ),
         status=attrs.get("status", ""),
         started_at=_parse_date(attrs.get("started_at")),
+        acknowledged_at=_parse_date(attrs.get("acknowledged_at")),
+        mitigated_at=_parse_date(attrs.get("mitigated_at")),
         resolved_at=_parse_date(attrs.get("resolved_at")),
         description=attrs.get("summary", "") or attrs.get("description", ""),
         services=_extract_services(attrs),
@@ -212,24 +215,59 @@ def _normalise_incident(raw: dict) -> RootlyIncident:
     )
 
 
-def _normalise_retrospective(raw: dict, incident_lookup: dict[str, RootlyIncident]) -> RootlyRetrospective:
+def _extract_id_list(attrs: dict, key: str) -> list[str]:
+    """Pull a list of IDs from an attributes field."""
+    items = attrs.get(key) or []
+    if isinstance(items, list):
+        return [str(i) for i in items if i]
+    return []
+
+
+def _normalise_alert(raw: dict) -> RootlyAlert:
     attrs = raw.get("attributes", {})
-    rels = raw.get("relationships", {})
-    incident_rel = rels.get("incident", {}).get("data", {})
-    incident_id = str(incident_rel.get("id", attrs.get("incident_id", "")))
-    incident = incident_lookup.get(incident_id)
-    return RootlyRetrospective(
+
+    # Primary: attributes.incidents is an array of embedded incident objects
+    incident_id = ""
+    incidents_list = attrs.get("incidents") or []
+    if isinstance(incidents_list, list) and incidents_list:
+        first = incidents_list[0]
+        if isinstance(first, dict):
+            incident_id = str(first.get("id", ""))
+
+    # Fallback: relationships.incident.data.id (older API shape)
+    if not incident_id:
+        rels = raw.get("relationships", {})
+        inc_rel = rels.get("incident", {})
+        inc_data = inc_rel.get("data") if isinstance(inc_rel, dict) else None
+        if isinstance(inc_data, dict):
+            incident_id = str(inc_data.get("id", ""))
+
+    # Fallback: flat attributes.incident_id
+    if not incident_id:
+        incident_id = str(attrs.get("incident_id", "") or "")
+
+    noise_val = attrs.get("noise") or ""
+    return RootlyAlert(
         id=str(raw.get("id", "")),
-        incident_id=incident_id,
-        incident_title=incident.title if incident else attrs.get("title", ""),
+        summary=attrs.get("summary", "") or attrs.get("title", ""),
         status=attrs.get("status", ""),
-        content=attrs.get("content", "") or "",
-        created_at=_parse_date(attrs.get("created_at")),
-        updated_at=_parse_date(attrs.get("updated_at")),
+        source=attrs.get("source", ""),
+        noise=str(noise_val),
         started_at=_parse_date(attrs.get("started_at")),
-        mitigated_at=_parse_date(attrs.get("mitigated_at")),
-        resolved_at=_parse_date(attrs.get("resolved_at")),
-        url=attrs.get("url", "") or "",
+        ended_at=_parse_date(attrs.get("ended_at")),
+        service_ids=_extract_id_list(attrs, "service_ids"),
+        team_ids=_extract_id_list(attrs, "group_ids"),
+        incident_id=incident_id,
+        raw=raw,
+    )
+
+
+def _normalise_team(raw: dict) -> RootlyTeam:
+    attrs = raw.get("attributes", {})
+    return RootlyTeam(
+        id=str(raw.get("id", "")),
+        name=attrs.get("name", ""),
+        slug=attrs.get("slug", ""),
         raw=raw,
     )
 
@@ -294,101 +332,71 @@ class RootlyClient:
         print(flush=True)  # clear the \r line
         return results
 
-    def fetch_retrospectives_for_incidents(
+    def fetch_alerts(
         self, incidents: list[RootlyIncident]
-    ) -> list[RootlyRetrospective]:
-        """Return retrospectives linked to the given incidents.
+    ) -> list[RootlyAlert]:
+        """Return triggered alerts by fetching /v1/incidents/{id}/alerts per incident.
 
-        Strategy: fetch post_mortems filtered by the date window of the
-        incidents (bulk, single paginated request) then match by incident ID.
-        This is far faster than one request per incident.
-
-        Falls back to per-incident fetching only if the bulk call fails.
+        Rootly's global /v1/alerts endpoint ignores filter[incident_id], so the
+        only reliable way to collect triggered alerts is via the per-incident
+        sub-resource.  This makes one paginated request per incident (121 requests
+        for 121 incidents) instead of paginating through tens of thousands of
+        alerts globally.
         """
-        if not incidents:
-            return []
-
-        incident_lookup = {i.id: i for i in incidents}
-        incident_ids = set(incident_lookup.keys())
-
-        # Derive window from the incidents we have
-        started_dates = [i.started_at for i in incidents if i.started_at]
-        if started_dates:
-            start_iso = min(started_dates)
-            end_iso = max(
-                i.resolved_at or i.started_at
-                for i in incidents
-                if i.started_at
-            )
-        else:
-            # Fallback: use a wide window
-            now = datetime.now(timezone.utc)
-            start_iso = (now - timedelta(days=90)).strftime("%Y-%m-%dT%H:%M:%SZ")
-            end_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-        # --- bulk fetch by date window ---
-        try:
-            results = self._fetch_retros_bulk(start_iso, end_iso, incident_lookup, incident_ids)
-            if results:
-                return results
-        except RuntimeError as exc:
-            print(f"  Bulk retrospective fetch failed ({exc}), falling back to per-incident fetch…")
-
-        # --- fallback: one request per incident ---
-        return self._fetch_retros_per_incident(incidents, incident_lookup)
-
-    def _fetch_retros_bulk(
-        self,
-        start_iso: str,
-        end_iso: str,
-        incident_lookup: dict[str, RootlyIncident],
-        incident_ids: set[str],
-    ) -> list[RootlyRetrospective]:
-        """Fetch all post_mortems in one paginated pass and filter by incident ID."""
-        params: dict[str, str] = {
-            "filter[created_at_gte]": start_iso,
-            "sort": "-created_at",
-        }
         seen_ids: set[str] = set()
-        results: list[RootlyRetrospective] = []
+        results: list[RootlyAlert] = []
 
-        for raw in _paginate("/v1/post_mortems", self._headers, params, label="retrospectives"):
-            rid = str(raw.get("id", ""))
-            if rid in seen_ids:
-                continue
-            seen_ids.add(rid)
-            retro = _normalise_retrospective(raw, incident_lookup)
-            # Only keep retrospectives linked to our incidents
-            if retro.incident_id in incident_ids:
-                results.append(retro)
+        for i, incident in enumerate(incidents, 1):
+            print(
+                f"  [alerts] incident {i}/{len(incidents)} ({incident.id[:8]}...)    ",
+                end="\r", flush=True,
+            )
+            try:
+                for raw in _paginate(
+                    f"/v1/incidents/{incident.id}/alerts",
+                    self._headers,
+                    {},
+                    label="",
+                ):
+                    aid = str(raw.get("id", ""))
+                    if aid in seen_ids:
+                        continue
+                    seen_ids.add(aid)
+                    alert = _normalise_alert(raw)
+                    # Stamp incident_id from the URL path if not in payload
+                    if not alert.incident_id:
+                        alert = RootlyAlert(
+                            id=alert.id,
+                            summary=alert.summary,
+                            status=alert.status,
+                            source=alert.source,
+                            noise=alert.noise,
+                            started_at=alert.started_at,
+                            ended_at=alert.ended_at,
+                            service_ids=alert.service_ids,
+                            team_ids=alert.team_ids,
+                            incident_id=incident.id,
+                            raw=alert.raw,
+                        )
+                    results.append(alert)
+            except Exception as exc:
+                print(f"\n  Warning: could not fetch alerts for incident {incident.id}: {exc}")
 
+        print(flush=True)
         return results
 
-    def _fetch_retros_per_incident(
-        self,
-        incidents: list[RootlyIncident],
-        incident_lookup: dict[str, RootlyIncident],
-    ) -> list[RootlyRetrospective]:
-        """Fallback: fetch post_mortems one incident at a time."""
+    def fetch_teams(self) -> list[RootlyTeam]:
+        """Return all teams in the account."""
         seen_ids: set[str] = set()
-        results: list[RootlyRetrospective] = []
-        total = len(incidents)
+        results: list[RootlyTeam] = []
 
-        for idx, incident in enumerate(incidents, 1):
-            print(f"  [retrospectives] incident {idx}/{total}…", end="\r", flush=True)
-            params = {"filter[incident_id]": incident.id, "sort": "-created_at"}
-            try:
-                for raw in _paginate("/v1/post_mortems", self._headers, params):
-                    rid = str(raw.get("id", ""))
-                    if rid in seen_ids:
-                        continue
-                    seen_ids.add(rid)
-                    results.append(_normalise_retrospective(raw, incident_lookup))
-            except RuntimeError:
-                pass
+        for raw in _paginate("/v1/teams", self._headers, {}, label="teams"):
+            tid = str(raw.get("id", ""))
+            if tid in seen_ids:
+                continue
+            seen_ids.add(tid)
+            results.append(_normalise_team(raw))
 
-        if total > 0:
-            print(flush=True)
         return results
 
 
