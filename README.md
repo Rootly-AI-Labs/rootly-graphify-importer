@@ -34,7 +34,7 @@ ROOTLY_API_KEY=rootly_...
 
 ## Run the workflow
 
-### Step 1 — Fetch and build *(terminal)*
+### Step 1: Fetch and build *(terminal)*
 
 Fetches incidents, triggered alerts, and teams. Builds the initial graph with severity colors, alert filters, and team/service layers.
 
@@ -54,7 +54,7 @@ Outputs written to `graphify-rootly-data/graphify-out/`:
 
 ---
 
-### Step 2 — Add semantic meaning *(agent)*
+### Step 2: Add semantic meaning *(agent)*
 
 Runs parallel subagents over the incident corpus to infer cross-incident themes, recurring patterns, and root cause relationships.
 
