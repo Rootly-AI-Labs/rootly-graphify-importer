@@ -71,13 +71,9 @@ run graphify on graphify-rootly-data --mode deep
 
 ---
 
-### Step 3: Re-apply Rootly colors *(terminal)*
+### Step 3: Open the current graph output
 
-After semantic enrichment, restore the Rootly-specific visualization with severity colors, triggered alert toggles, and team/service layers.
-
-```bash
-graphify rootly viz
-```
+After semantic enrichment, use the top-level output in `graphify-out/graph.html`. The current generic visualization already includes the maintained filters and visuals, so no separate re-apply command is needed.
 
 ---
 
@@ -113,7 +109,7 @@ Once `graph.html` is open in a browser:
 
 3. **Optional deep enrichment.** Run `/graphify ./graphify-rootly-data --mode deep` to dispatch parallel subagents over the markdown files and infer cross-incident themes, rationale, and conceptual links.
 
-4. **Re-apply Rootly visualization.** After semantic enrichment the generic extractor replaces `graph.html`. Run `graphify rootly viz` to regenerate it with the full Rootly color scheme and filters applied to the enriched graph.
+4. **Use the current top-level output.** After semantic enrichment, open `graphify-out/graph.html`. The current generic exporter already includes the maintained filters and visuals directly, so no separate re-apply step is required.
 
 **Clustering is graph-topology-based — no embeddings.** Leiden finds communities by edge density. Semantic similarity edges (`semantically_similar_to`, marked `INFERRED`) influence community detection directly. No separate embedding step or vector database required.
 
@@ -145,8 +141,6 @@ graphify rootly                                        # interactive Rootly impo
 graphify rootly --days 30                              # collect last 30 days of incidents
 graphify rootly --api-key-env ROOTLY_API_KEY           # non-interactive key lookup from env
 graphify rootly --output ./my-rootly-corpus            # write corpus to a custom folder
-graphify rootly viz                                    # re-apply Rootly coloring after semantic enrichment
-graphify rootly viz --graph ./corpus/graphify-out/graph.json
 
 # --- Semantic enrichment (agent: Claude Code / Codex) ---
 /graphify ./graphify-rootly-data                       # analyze the Rootly corpus
@@ -179,9 +173,6 @@ graphify rootly --api-key-env ROOTLY_API_KEY --days 30 --mode standard
 
 # Re-enrich with semantic step (Claude Code)
 /graphify graphify-rootly-data --update
-
-# Restore Rootly colors
-graphify rootly viz
 ```
 
 ---

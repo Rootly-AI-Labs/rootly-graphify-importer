@@ -1,4 +1,4 @@
-"""graphify CLI - `graphify install` sets up the Claude Code skill."""
+﻿"""graphify CLI - `graphify install` sets up the Claude Code skill."""
 from __future__ import annotations
 import json
 import platform
@@ -378,89 +378,8 @@ def main() -> None:
         print("Run 'graphify --help' for usage.", file=sys.stderr)
         sys.exit(1)
 
-
-def _run_rootly_viz_command(args: list[str]) -> None:
-    """Re-apply Rootly coloring + filters to an existing graph.json.
-
-    Usage: graphify rootly viz [--graph <path>] [--output <path>]
-
-    Defaults:
-      --graph   graphify-rootly-data/graphify-out/graph.json
-      --output  graphify-rootly-data/graphify-out/graph.html
-    """
-    graph_path: Path | None = None
-    output_path: Path | None = None
-
-    i = 0
-    while i < len(args):
-        arg = args[i]
-        if arg in ("--graph",) and i + 1 < len(args):
-            graph_path = Path(args[i + 1])
-            i += 2
-        elif arg.startswith("--graph="):
-            graph_path = Path(arg.split("=", 1)[1])
-            i += 1
-        elif arg in ("--output",) and i + 1 < len(args):
-            output_path = Path(args[i + 1])
-            i += 2
-        elif arg.startswith("--output="):
-            output_path = Path(arg.split("=", 1)[1])
-            i += 1
-        elif arg in ("-h", "--help"):
-            print("Usage: graphify rootly viz [--graph <path>] [--output <path>]")
-            print()
-            print("Re-applies Rootly color coding and filters to an existing graph.json.")
-            print("Use this after running semantic extraction (e.g. via /graphify) to")
-            print("restore the Rootly-specific visualization with severity colors,")
-            print("team/service layers, and alert filtering.")
-            print()
-            print("Options:")
-            print("  --graph <path>    path to graph.json  (default: graphify-rootly-data/graphify-out/graph.json)")
-            print("  --output <path>   path to write graph.html  (default: same dir as graph.json)")
-            return
-        else:
-            print(f"error: unknown flag '{arg}'. Run 'graphify rootly viz --help'.", file=sys.stderr)
-            sys.exit(1)
-
-    # Defaults
-    if graph_path is None:
-        graph_path = Path("graphify-rootly-data") / "graphify-out" / "graph.json"
-    if not graph_path.exists():
-        print(f"error: graph.json not found at {graph_path}", file=sys.stderr)
-        print("  Run 'graphify rootly' first to generate it.", file=sys.stderr)
-        sys.exit(1)
-
-    if output_path is None:
-        output_path = graph_path.parent / "graph.html"
-
-    print(f"  Loading graph from {graph_path}...")
-    from networkx.readwrite import json_graph as nx_json_graph
-    from graphify.cluster import cluster
-    from graphify.export import to_html
-
-    # graph.json is written by to_json() using node_link_data (edges key = "links"),
-    # so we must load it with node_link_graph — not build_from_json which expects
-    # an extraction dict with an "edges" key and would silently drop all edges.
-    graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
-    G = nx_json_graph.node_link_graph(graph_data, edges="links")
-    communities = cluster(G)
-
-    print(f"  Applying Rootly visualization...")
-    try:
-        to_html(G, communities, str(output_path), rootly=True)
-        print(f"  Done -> {output_path.resolve()}")
-    except ValueError as exc:
-        print(f"  error: {exc}", file=sys.stderr)
-        sys.exit(1)
-
-
 def _run_rootly_command(args: list[str]) -> None:
     """Parse flags for `graphify rootly` and delegate to rootly_flow."""
-    # Subcommand dispatch
-    if args and args[0] == "viz":
-        _run_rootly_viz_command(args[1:])
-        return
-
     api_key_override: str | None = None
     days_override: int | None = None
     mode_override: str | None = None
@@ -519,10 +438,7 @@ def _run_rootly_command(args: list[str]) -> None:
             data_override = arg.split("=", 1)[1]
             i += 1
         elif arg in ("-h", "--help"):
-            print("Usage: graphify rootly [subcommand] [options]")
-            print()
-            print("Subcommands:")
-            print("  viz                   re-apply Rootly coloring to an existing graph.json")
+            print("Usage: graphify rootly [options]")
             print()
             print("Options (fetch + build):")
             print("  --days 7|30|90        date range (skips the TUI prompt)")
@@ -551,3 +467,4 @@ def _run_rootly_command(args: list[str]) -> None:
 
 if __name__ == "__main__":
     main()
+
