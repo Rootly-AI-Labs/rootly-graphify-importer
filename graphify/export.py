@@ -82,6 +82,22 @@ def _team_label_rank(label: str) -> tuple[int, int]:
     return (generic, len(label))
 
 
+def _generic_node_color(node_id: str, data: dict, fallback: str) -> str:
+    if _is_team_node(node_id, data):
+        return "#22c55e"
+    if node_id.startswith("incident_"):
+        return "#ef4444"
+    if node_id.startswith("alert_"):
+        return "#eab308"
+    if node_id.startswith("concept_"):
+        return "#60a5fa"
+    if node_id.startswith("rationale_"):
+        return "#94a3b8"
+    if node_id.startswith("source_"):
+        return "#a78bfa"
+    return "#64748b"
+
+
 def _team_filter_data(
     G: nx.Graph,
     cutoff: int = 3,
@@ -147,8 +163,8 @@ def _html_styles() -> str:
   #neighbors-list { max-height: 160px; overflow-y: auto; margin-top: 4px; }
   .filter-section { margin-bottom: 16px; }
   .filter-label { display: block; margin-bottom: 6px; color: #888; font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
-  #filter-team { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 8px 10px; border-radius: 6px; font-size: 12px; outline: none; }
-  #filter-team:focus { border-color: #4E79A7; }
+  .filter-select { width: 100%; background: #0f0f1a; border: 1px solid #3a3a5e; color: #e0e0e0; padding: 8px 10px; border-radius: 6px; font-size: 12px; outline: none; }
+  .filter-select:focus { border-color: #4E79A7; }
   .filter-hint { font-size: 11px; color: #787d9c; line-height: 1.5; }
   #reset-filters { width: 100%; padding: 8px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 12px; cursor: pointer; }
   #reset-filters:hover { background: #2a2a4e; }
@@ -158,6 +174,9 @@ def _html_styles() -> str:
   .legend-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
   .legend-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .legend-count { color: #666; font-size: 11px; }
+  .legend-actions { display: flex; gap: 8px; margin-bottom: 12px; }
+  .legend-btn { flex: 1; padding: 7px 10px; background: #20203a; border: 1px solid #3a3a5e; color: #d5daf5; border-radius: 6px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer; }
+  .legend-btn:hover { background: #2a2a4e; }
   #stats { padding: 10px 14px; border-top: 1px solid #2a2a4e; font-size: 11px; color: #555; }
 </style>"""
 
@@ -228,6 +247,8 @@ const nodesDS = new vis.DataSet(RAW_NODES.map(n => ({{
   _community: n.community, _community_name: n.community_name,
   _source_file: n.source_file, _file_type: n.file_type, _degree: n.degree,
   _team_names: n.team_names || [],
+  _community_color: n.community_color,
+  _type_color: n.type_color,
 }})));
 
 const edgesDS = new vis.DataSet(RAW_EDGES.map((e, i) => ({{
@@ -272,9 +293,19 @@ network.once('stabilizationIterationsDone', () => {{
 
 const filterState = {{
   team: '',
+  colorMode: 'type',
 }};
 
 const hiddenCommunities = new Set();
+
+function colorForNode(n) {{
+  const hex = filterState.colorMode === 'community' ? n._community_color : n._type_color;
+  return {{
+    background: hex,
+    border: hex,
+    highlight: {{ background: '#ffffff', border: hex }},
+  }};
+}}
 
 function nodeVisible(n) {{
   if (hiddenCommunities.has(n._community)) return false;
@@ -285,7 +316,7 @@ function nodeVisible(n) {{
 function applyFilters() {{
   const nodeUpdates = nodesDS.getIds().map(id => {{
     const n = nodesDS.get(id);
-    return {{ id, hidden: !nodeVisible(n) }};
+    return {{ id, hidden: !nodeVisible(n), color: colorForNode(n) }};
   }});
   nodesDS.update(nodeUpdates);
 
@@ -379,30 +410,56 @@ teamSelect.addEventListener('change', () => {{
   filterState.team = teamSelect.value;
   applyFilters();
 }});
+const colorModeSelect = document.getElementById('filter-color-mode');
+colorModeSelect.addEventListener('change', () => {{
+  filterState.colorMode = colorModeSelect.value;
+  applyFilters();
+}});
 document.getElementById('reset-filters').addEventListener('click', () => {{
   filterState.team = '';
+  filterState.colorMode = 'type';
   teamSelect.value = '';
+  colorModeSelect.value = 'type';
   applyFilters();
 }});
 
 const legendEl = document.getElementById('legend');
+const legendItems = new Map();
+
+function setCommunityHidden(cid, hidden) {{
+  if (hidden) {{
+    hiddenCommunities.add(cid);
+  }} else {{
+    hiddenCommunities.delete(cid);
+  }}
+  const item = legendItems.get(cid);
+  if (item) {{
+    item.classList.toggle('dimmed', hidden);
+  }}
+}}
+
 LEGEND.forEach(c => {{
   const item = document.createElement('div');
   item.className = 'legend-item';
+  legendItems.set(c.cid, item);
   item.innerHTML = `<div class="legend-dot" style="background:${{c.color}}"></div>
     <span class="legend-label">${{c.label}}</span>
     <span class="legend-count">${{c.count}}</span>`;
   item.onclick = () => {{
-    if (hiddenCommunities.has(c.cid)) {{
-      hiddenCommunities.delete(c.cid);
-      item.classList.remove('dimmed');
-    }} else {{
-      hiddenCommunities.add(c.cid);
-      item.classList.add('dimmed');
-    }}
+    setCommunityHidden(c.cid, !hiddenCommunities.has(c.cid));
     applyFilters();
   }};
   legendEl.appendChild(item);
+}});
+
+document.getElementById('legend-hide-all').addEventListener('click', () => {{
+  LEGEND.forEach(c => setCommunityHidden(c.cid, true));
+  applyFilters();
+}});
+
+document.getElementById('legend-view-all').addEventListener('click', () => {{
+  LEGEND.forEach(c => setCommunityHidden(c.cid, false));
+  applyFilters();
 }});
 
 applyFilters();
@@ -497,7 +554,9 @@ def to_html(
     vis_nodes = []
     for node_id, data in G.nodes(data=True):
         cid = node_community.get(node_id, 0)
-        color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
+        community_color = COMMUNITY_COLORS[cid % len(COMMUNITY_COLORS)]
+        type_color = _generic_node_color(str(node_id), data, community_color)
+        color = type_color
         label = sanitize_label(data.get("label", node_id))
         deg = degree.get(node_id, 1)
         size = 10 + 30 * (deg / max_deg)
@@ -515,6 +574,8 @@ def to_html(
             "file_type": data.get("file_type", ""),
             "degree": deg,
             "team_names": team_names_by_node.get(str(node_id), []),
+            "community_color": community_color,
+            "type_color": type_color,
         })
 
     # Build edges list
@@ -577,18 +638,28 @@ def to_html(
     <div id="filters-wrap" class="sidebar-panel">
       <h3>Filters</h3>
       <div class="filter-section">
-        <label class="filter-label" for="filter-team">Team</label>
-        <select id="filter-team">
-          <option value="">All Teams</option>
+        <label class="filter-label" for="filter-color-mode">Coloring</label>
+        <select id="filter-color-mode" class="filter-select">
+          <option value="type">Node Type</option>
+          <option value="community">Community</option>
         </select>
+        <p class="filter-hint"><b>Node Type</b><br>Colors by what a node represents: teams are green, incidents red, alerts yellow, concepts blue, and rationale/meta nodes muted.<br><br><b>Community</b><br>Colors every node by its graph cluster from the Communities panel.</p>
       </div>
       <div class="filter-section">
-        <p class="filter-hint">Show the selected team and nearby connected nodes. Leave the dropdown on <b>All Teams</b> to view the full graph.</p>
+        <label class="filter-label" for="filter-team">Team</label>
+        <select id="filter-team" class="filter-select">
+          <option value="">All Teams</option>
+        </select>
+        <p class="filter-hint">Team filters the graph to the selected team and nearby connected nodes. Leave it on <b>All Teams</b> to view the full graph.</p>
       </div>
       <button id="reset-filters" type="button">Reset Filters</button>
     </div>
     <div id="legend-wrap" class="sidebar-panel">
       <h3>Communities</h3>
+      <div class="legend-actions">
+        <button id="legend-hide-all" class="legend-btn" type="button">Hide All</button>
+        <button id="legend-view-all" class="legend-btn" type="button">View All</button>
+      </div>
       <div id="legend"></div>
     </div>
   </div>
