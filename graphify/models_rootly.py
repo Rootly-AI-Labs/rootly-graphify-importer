@@ -57,6 +57,10 @@ class RootlyFlowConfig:
     advanced_action: AdvancedAction | None = None
     # True when key came from $ROOTLY_API_KEY env var
     use_env_key: bool = False
+    # Data types to collect
+    collect_incidents: bool = True
+    collect_alerts: bool = True
+    collect_teams: bool = True
 
     def masked_key(self) -> str:
         """Return a safely masked version of the API key for logging.

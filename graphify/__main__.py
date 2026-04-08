@@ -434,12 +434,15 @@ def _run_rootly_viz_command(args: list[str]) -> None:
         output_path = graph_path.parent / "graph.html"
 
     print(f"  Loading graph from {graph_path}...")
-    from graphify.build import build_from_json
+    from networkx.readwrite import json_graph as nx_json_graph
     from graphify.cluster import cluster
     from graphify.export import to_html
 
+    # graph.json is written by to_json() using node_link_data (edges key = "links"),
+    # so we must load it with node_link_graph — not build_from_json which expects
+    # an extraction dict with an "edges" key and would silently drop all edges.
     graph_data = json.loads(graph_path.read_text(encoding="utf-8"))
-    G = build_from_json(graph_data)
+    G = nx_json_graph.node_link_graph(graph_data, edges="links")
     communities = cluster(G)
 
     print(f"  Applying Rootly visualization...")
@@ -462,6 +465,7 @@ def _run_rootly_command(args: list[str]) -> None:
     days_override: int | None = None
     mode_override: str | None = None
     output_dir_override: Path | None = None
+    data_override: str | None = None
 
     i = 0
     while i < len(args):
@@ -508,6 +512,12 @@ def _run_rootly_command(args: list[str]) -> None:
         elif arg.startswith("--output="):
             output_dir_override = Path(arg.split("=", 1)[1])
             i += 1
+        elif arg in ("--data",) and i + 1 < len(args):
+            data_override = args[i + 1]
+            i += 2
+        elif arg.startswith("--data="):
+            data_override = arg.split("=", 1)[1]
+            i += 1
         elif arg in ("-h", "--help"):
             print("Usage: graphify rootly [subcommand] [options]")
             print()
@@ -519,6 +529,9 @@ def _run_rootly_command(args: list[str]) -> None:
             print("  --mode <name>         run mode: standard|deep|no_viz|obsidian|update (skips prompt)")
             print("  --api-key-env VAR     read Rootly API key from env var VAR (skips masked input)")
             print("  --output <dir>        output directory (default: ./graphify-rootly-data)")
+            print("  --data <types>        comma-separated list of data to collect (skips the TUI prompt)")
+            print("                        values: incidents, alerts, teams")
+            print("                        e.g. --data incidents,teams")
             print()
             print("When flags are omitted, an interactive TUI guides you through each step.")
             return
@@ -532,6 +545,7 @@ def _run_rootly_command(args: list[str]) -> None:
         days_override=days_override,
         mode_override=mode_override,
         output_dir_override=output_dir_override,
+        data_override=data_override,
     )
 
 

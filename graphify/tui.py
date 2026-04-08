@@ -265,9 +265,31 @@ def prompt_output_dir(default: Path) -> Path:
 # Security warning
 # ---------------------------------------------------------------------------
 
+def prompt_data_types() -> tuple[bool, bool, bool]:
+    """Ask which data types to collect. Returns (incidents, alerts, teams)."""
+    q = _require_questionary()
+
+    choices = q.checkbox(
+        "Select data to collect:",
+        choices=[
+            q.Choice(title="Incidents  – full date-window fetch", value="incidents", checked=True),
+            q.Choice(title="Alerts     – triggered only (linked to an incident)", value="alerts", checked=True),
+            q.Choice(title="Teams      – full account fetch", value="teams", checked=True),
+        ],
+    ).ask()
+
+    if choices is None:
+        sys.exit(0)
+    if not choices:
+        print("  No data types selected – aborting.", file=sys.stderr)
+        sys.exit(1)
+
+    return "incidents" in choices, "alerts" in choices, "teams" in choices
+
+
 def print_data_warning() -> None:
     print()
-    print("  ⚠️  WARNING: Rootly retrospectives may contain sensitive incident data.")
+    print("  WARNING: Rootly data may contain sensitive incident information.")
     print("  The export directory will be added to .gitignore automatically.")
     print("  Do not commit it to version control.")
     print()
@@ -283,6 +305,7 @@ def run_rootly_flow(
     days_override: int | None = None,
     mode_override: str | None = None,
     output_dir_override: Path | None = None,
+    data_override: str | None = None,
 ) -> "RootlyFlowConfig":
     """Run the interactive TUI and return a fully-populated RootlyFlowConfig.
 
@@ -335,6 +358,18 @@ def run_rootly_flow(
     else:
         output_dir = prompt_output_dir(default_output)
 
+    # ---- data types ----
+    if data_override is not None:
+        parts = {p.strip().lower() for p in data_override.split(",")}
+        collect_incidents = "incidents" in parts
+        collect_alerts    = "alerts" in parts
+        collect_teams     = "teams" in parts
+        if not collect_incidents and not collect_alerts and not collect_teams:
+            print("  --data must include at least one of: incidents, alerts, teams", file=sys.stderr)
+            sys.exit(1)
+    else:
+        collect_incidents, collect_alerts, collect_teams = prompt_data_types()
+
     # ---- compute date window ----
     start_at, end_at = date_range_to_datetimes(date_range_preset)  # type: ignore[arg-type]
 
@@ -348,4 +383,7 @@ def run_rootly_flow(
         output_dir=output_dir,
         graphify_mode=graphify_mode,
         use_env_key=use_env_key,
+        collect_incidents=collect_incidents,
+        collect_alerts=collect_alerts,
+        collect_teams=collect_teams,
     )

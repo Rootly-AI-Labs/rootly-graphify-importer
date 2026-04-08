@@ -750,7 +750,7 @@ function nodeVisible(n) {{
   if (n._node_type === 'service') {{
     if (filterState.team) {{
       // Show service if connected to selected team
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const cn = nodesDS.get(cid);
         return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
@@ -771,7 +771,7 @@ function nodeVisible(n) {{
     }}
     // Team filter: show incident if connected to selected team
     if (filterState.team) {{
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const cn = nodesDS.get(cid);
         return cn && cn._node_type === 'team' && cn._team_name === filterState.team;
@@ -789,11 +789,11 @@ function nodeVisible(n) {{
     }}
     // Team filter: show alert if its incident is connected to selected team
     if (filterState.team && n._has_incident) {{
-      const connIds = network.getConnectedNodes(n.id);
+      const connIds = connectedIds(n.id);
       return connIds.some(cid => {{
         const inc = nodesDS.get(cid);
         if (!inc || inc._node_type !== 'incident') return false;
-        const incConns = network.getConnectedNodes(cid);
+        const incConns = connectedIds(cid);
         return incConns.some(tid => {{
           const tn = nodesDS.get(tid);
           return tn && tn._node_type === 'team' && tn._team_name === filterState.team;
@@ -807,11 +807,30 @@ function nodeVisible(n) {{
 }}
 
 function applyFilters() {{
-  const updates = nodesDS.getIds().map(id => {{
+  const nodeUpdates = nodesDS.getIds().map(id => {{
     const n = nodesDS.get(id);
     return {{ id, hidden: !nodeVisible(n) }};
   }});
-  nodesDS.update(updates);
+  nodesDS.update(nodeUpdates);
+
+  // Explicitly sync edge visibility — vis-network doesn't reliably auto-hide/show
+  // edges when connected nodes change hidden state via DataSet.update()
+  const hiddenSet = new Set(
+    nodesDS.get({{ filter: n => n.hidden }}).map(n => n.id)
+  );
+  const edgeUpdates = edgesDS.getIds().map(id => {{
+    const e = edgesDS.get(id);
+    return {{ id, hidden: hiddenSet.has(e.from) || hiddenSet.has(e.to) }};
+  }});
+  edgesDS.update(edgeUpdates);
+}}
+
+// ── Edge-based neighbour lookup (works even when nodes are hidden) ────────────
+// network.getConnectedNodes() returns [] for hidden nodes; querying edgesDS
+// directly is reliable regardless of current visibility state.
+function connectedIds(nodeId) {{
+  return edgesDS.get().filter(e => e.from === nodeId || e.to === nodeId)
+                      .map(e => e.from === nodeId ? e.to : e.from);
 }}
 
 // ── Populate team dropdown ────────────────────────────────────────────────────
