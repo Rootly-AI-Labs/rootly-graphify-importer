@@ -6,7 +6,7 @@
 
 Built on [graphify](https://github.com/safishamsi/graphify), a tool inspired by [Andrej Karpathy's LLM Wiki idea](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — instead of rediscovering knowledge from scratch on every query, have an LLM build a persistent, structured knowledge graph that grows richer over time. Graphify takes any folder of files and turns it into a queryable graph with communities, connections, and confidence scores. This fork points it at the Rootly API.
 
-Connect the Rootly API, collect incidents, alerts, and teams for a selected time window, export them into a local corpus, and turn that corpus into a queryable knowledge graph. Use `graphify rootly` for collection and `/graphify` in Claude Code or Codex when you want deeper semantic analysis on top.
+Connect the Rootly API, collect incidents, alerts, teams, and the service catalog for a selected time window, export them into a local corpus, and turn that corpus into a queryable knowledge graph. Use `graphify rootly` for collection and `/graphify` in Claude Code or Codex when you want deeper semantic analysis on top.
 
 <p align="center">
   <img src="assets/screenshot.png" alt="Graphify interface showing Rootly incident and alert data as a knowledge graph" />
