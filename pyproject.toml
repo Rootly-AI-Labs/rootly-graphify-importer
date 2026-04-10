@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "graphifyy"
 version = "0.3.6"
-description = "AI coding assistant skill (Claude Code, Codex, OpenCode, OpenClaw) - turn any folder of code, docs, papers, or images into a queryable knowledge graph"
+description = "Turn Rootly incidents, alerts, and teams into a queryable knowledge graph"
 readme = "README.md"
 license = { file = "LICENSE" }
-keywords = ["claude", "claude-code", "codex", "opencode", "knowledge-graph", "rag", "graphrag", "obsidian", "community-detection", "tree-sitter", "leiden", "llm"]
+keywords = ["rootly", "incidents", "knowledge-graph", "claude-code", "codex", "graphrag", "community-detection", "incident-management", "on-call", "sre"]
 requires-python = ">=3.10"
 dependencies = [
     "networkx",
@@ -34,9 +34,9 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/safishamsi/graphify"
-Repository = "https://github.com/safishamsi/graphify"
-Issues = "https://github.com/safishamsi/graphify/issues"
+Homepage = "https://github.com/Rootly-AI-Labs/rootly-graphify-importer"
+Repository = "https://github.com/Rootly-AI-Labs/rootly-graphify-importer"
+Issues = "https://github.com/Rootly-AI-Labs/rootly-graphify-importer/issues"
 
 [project.optional-dependencies]
 mcp = ["mcp"]

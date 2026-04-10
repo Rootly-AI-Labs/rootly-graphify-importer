@@ -79,12 +79,6 @@ run graphify on graphify-rootly-data --mode deep
 
 ---
 
-### Step 3: Open the current graph output
-
-After semantic enrichment, use the top-level output in `graphify-out/graph.html`. The current generic visualization already includes the maintained filters and visuals, so no separate re-apply command is needed.
-
----
-
 ## What you can explore
 
 | Pattern | What it shows | Why a graph helps |
@@ -195,6 +189,3 @@ graphify rootly --api-key-env ROOTLY_API_KEY --days 30 --mode standard
 /graphify graphify-rootly-data --update
 ```
 
----
-
-Cloned from [graphify](https://github.com/safishamsi/graphify)

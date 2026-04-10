@@ -1,9 +1,9 @@
-# graphify
+# rootly-graphify
 
-This project has a graphify knowledge graph at graphify-out/.
+This project turns Rootly incident data into a knowledge graph. The Rootly corpus lives in `graphify-rootly-data/` and the graph output in `graphify-out/`.
 
 **Always-on rules:**
-- Before answering architecture or codebase questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure
+- Before answering incident or architecture questions, read `graphify-out/GRAPH_REPORT.md` for god nodes and community structure
 - If `graphify-out/wiki/index.md` exists, navigate it instead of reading raw files
 - After modifying code files, run: `python -c "from graphify.watch import _rebuild_code; from pathlib import Path; _rebuild_code(Path('.'))"` to keep the graph current
 
