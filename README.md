@@ -16,18 +16,16 @@ Connect the Rootly API, collect incidents, alerts, and teams for a selected time
 
 ## Install
 
+**Fresh install (Graphify + Rootly importer):**
 ```bash
 pip install "graphifyy[rootly]"
+graphify install            # Claude Code
+graphify install --platform codex  # Codex
 ```
 
-**Claude Code:**
+**Add Rootly importer to an existing Graphify setup:**
 ```bash
-graphify install
-```
-
-**Codex:**
-```bash
-graphify install --platform codex
+pip install "graphifyy[rootly]" --upgrade
 ```
 
 ---
