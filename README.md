@@ -1,6 +1,16 @@
+<p align="center">
+  <img src="assets/banner.png" alt="Rootly Graphify Importer" />
+</p>
+
 # rootly-graphify
 
-A Rootly-first incident knowledge graph tool. Connect the Rootly API, collect incidents, alerts, and teams for a selected time window, export them into a local corpus, and turn that corpus into a queryable knowledge graph. Use `graphify rootly` for collection and `/graphify` in Claude Code or Codex when you want deeper semantic analysis on top.
+Built on [graphify](https://github.com/safishamsi/graphify), a tool inspired by [Andrej Karpathy's LLM Wiki idea](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) — instead of rediscovering knowledge from scratch on every query, have an LLM build a persistent, structured knowledge graph that grows richer over time. Graphify takes any folder of files and turns it into a queryable graph with communities, connections, and confidence scores. This fork points it at the Rootly API.
+
+Connect the Rootly API, collect incidents, alerts, and teams for a selected time window, export them into a local corpus, and turn that corpus into a queryable knowledge graph. Use `graphify rootly` for collection and `/graphify` in Claude Code or Codex when you want deeper semantic analysis on top.
+
+<p align="center">
+  <img src="assets/screenshot.png" alt="Graphify interface showing Rootly incident and alert data as a knowledge graph" />
+</p>
 
 ---
 
@@ -74,6 +84,18 @@ run graphify on graphify-rootly-data --mode deep
 ### Step 3: Open the current graph output
 
 After semantic enrichment, use the top-level output in `graphify-out/graph.html`. The current generic visualization already includes the maintained filters and visuals, so no separate re-apply command is needed.
+
+---
+
+## What you can explore
+
+| Pattern | What it shows | Why a graph helps |
+|---|---|---|
+| **Service incident heatmap** | Which services are on fire and how badly. Node size = incident count, color = worst severity. | Clusters services that tend to fail together, revealing hidden infrastructure dependencies. |
+| **Team on-call & escalation map** | Who covers what across all schedules and escalation policies in one view. | Spots single points of failure — the person on 4 schedules across 3 teams — and coverage gaps. |
+| **Alert-to-incident funnel** | Which alert sources produce real incidents vs. pure noise. | An alert source with 200 alerts and 0 incidents is immediately visible by node size. |
+| **Incident → action item follow-through** | Are we actually fixing what breaks? Solid edges = completed, dashed = open. | Clusters of open action items around a team or service expose systematic follow-through problems. |
+| **Cross-service failure correlation** | Which services fail together within the same time window. | Community detection finds shared-fate groups that likely depend on the same underlying infrastructure. |
 
 ---
 
